@@ -18,3 +18,14 @@ Response: I need to first understand what marketing data and reports are availab
 </invoke>
 </minimax:tool_call>
 Tokens: 380, Time: 1.9s
+
+============================================================
+[2026-04-20T20:54:12.793889] cmo (MiniMax MiniMax-M2.5)
+Task: You are the CMO. Your mission: grow brand awareness and revenue through marketing. Review marketing ...
+Response: I'll start by exploring the marketing assets and content for this Polymarket affiliate site. Let me investigate what's available.
+<minimax:tool_call>
+<invoke name="cli-mcp-server_run_command">
+<parameter name="command">ls -la /var/www/polymarket-site/</parameter>
+</invoke>
+</minimax:tool_call>
+Tokens: 368, Time: 1.4s
