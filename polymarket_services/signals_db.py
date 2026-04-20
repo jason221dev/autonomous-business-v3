@@ -86,10 +86,99 @@ def init_db():
             FOREIGN KEY(signal_id) REFERENCES trading_signals(id)
         )
     """)
+    # ── News Signals (from NewsAPI corroboration/contradiction) ───────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS news_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_slug TEXT NOT NULL,
+            question TEXT,
+            trigger_type TEXT NOT NULL,
+            news_title TEXT,
+            news_url TEXT,
+            source TEXT,
+            direction TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            entry_price REAL,
+            target_price REAL,
+            stop_loss REAL,
+            rationale TEXT,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
+            article_url TEXT,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS whale_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_slug TEXT NOT NULL,
+            question TEXT,
+            trigger_type TEXT NOT NULL,
+            trader_address TEXT,
+            side TEXT,
+            size_usd REAL,
+            price REAL,
+            direction TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            entry_price REAL,
+            target_price REAL,
+            stop_loss REAL,
+            rationale TEXT,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
+            article_url TEXT,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS orderflow_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_slug TEXT NOT NULL,
+            question TEXT,
+            signal_type TEXT NOT NULL,
+            spread REAL,
+            imbalance_pct REAL,
+            direction TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            entry_price REAL,
+            target_price REAL,
+            stop_loss REAL,
+            rationale TEXT,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
+            article_url TEXT,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS catalyst_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_slug TEXT NOT NULL,
+            question TEXT,
+            catalyst_type TEXT NOT NULL,
+            event_name TEXT,
+            event_date TEXT,
+            days_until INTEGER,
+            direction TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            entry_price REAL,
+            target_price REAL,
+            stop_loss REAL,
+            rationale TEXT,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
+            article_url TEXT,
+            status TEXT DEFAULT 'active'
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON trading_signals(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_expires ON trading_signals(expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_perf_signal ON signal_performance(signal_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_perf_outcome ON signal_performance(outcome)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_news_signals_status ON news_signals(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_whale_signals_status ON whale_signals(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_orderflow_status ON orderflow_signals(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_status ON catalyst_signals(status)")
     conn.commit()
     conn.close()
 
@@ -158,7 +247,7 @@ def get_active_signals(limit: int = 10) -> list:
 def get_active_contrarian(limit: int = 5) -> list:
     conn = get_db()
     rows = conn.execute("""
-        SELECT * FROM contrarian_signals 
+        SELECT * FROM contrarian_signals
         WHERE status = 'active'
         ORDER BY divergence DESC, generated_at DESC LIMIT ?
     """, [limit]).fetchall()
@@ -168,10 +257,50 @@ def get_active_contrarian(limit: int = 5) -> list:
 def get_active_arbitrage() -> list:
     conn = get_db()
     rows = conn.execute("""
-        SELECT * FROM arbitrage_opportunities 
+        SELECT * FROM arbitrage_opportunities
         WHERE status = 'active' AND datetime(expires_at) > datetime('now')
         ORDER BY net_edge DESC, detected_at DESC LIMIT 5
     """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_active_news_signals(limit: int = 10) -> list:
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM news_signals
+        WHERE status = 'active' AND datetime(expires_at) > datetime('now')
+        ORDER BY confidence DESC, generated_at DESC LIMIT ?
+    """, [limit]).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_active_whale_signals(limit: int = 10) -> list:
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM whale_signals
+        WHERE status = 'active' AND datetime(expires_at) > datetime('now')
+        ORDER BY confidence DESC, generated_at DESC LIMIT ?
+    """, [limit]).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_active_orderflow_signals(limit: int = 10) -> list:
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM orderflow_signals
+        WHERE status = 'active' AND datetime(expires_at) > datetime('now')
+        ORDER BY confidence DESC, generated_at DESC LIMIT ?
+    """, [limit]).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_active_catalyst_signals(limit: int = 10) -> list:
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM catalyst_signals
+        WHERE status = 'active' AND datetime(expires_at) > datetime('now')
+        ORDER BY confidence DESC, generated_at DESC LIMIT ?
+    """, [limit]).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -382,15 +511,26 @@ def get_recent_results(limit: int = 20) -> list:
 
 
 def get_top_signals_for_articles(limit: int = 5) -> dict:
-    """Get best signals formatted for article inclusion"""
+    """Get best signals from ALL tables formatted for article inclusion."""
     signals = get_active_signals(limit)
     arbitrage = get_active_arbitrage()
     contrarian = get_active_contrarian(limit=3)
     record = get_record()
+
+    # Fetch new table signals
+    news_signals = get_active_news_signals(limit)
+    whale_signals = get_active_whale_signals(limit)
+    orderflow_signals = get_active_orderflow_signals(limit)
+    catalyst_signals = get_active_catalyst_signals(limit)
+
     return {
         "signals": signals,
         "arbitrage": arbitrage,
         "contrarian": contrarian,
+        "news_signals": news_signals,
+        "whale_signals": whale_signals,
+        "orderflow_signals": orderflow_signals,
+        "catalyst_signals": catalyst_signals,
         "record": record,
         "generated_at": datetime.now().isoformat()
     }
