@@ -45,15 +45,15 @@ ROLE_MODELS = {
     "vp-hr":           {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     "vp-cs":           {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     # Key 2: NIM Code
-    "swe-1":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
-    "swe-2":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
-    "swe-3":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
-    "swe-4":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
+    "swe-1":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
+    "swe-2":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
+    "swe-3":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
+    "swe-4":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
     "fe-1":            {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
     "fe-2":            {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
     "devops":          {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
     # Key 3: NIM Content
-    "content-writer":  {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_3"},
+    "content-writer":  {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
     "seo":             {"provider": "nvidia_nim", "model": "google/gemma-3-27b-it", "key": "NIM_KEY_3"},
     "mkt-campaigns":   {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
     "sales-dr":        {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2-instruct", "key": "NIM_KEY_3"},
@@ -388,13 +388,11 @@ class Supervisor:
         if last is None:
             return True
 
-        # Check cron schedule
+        # Check cron schedule — run if we've reached or passed the next boundary
         try:
             cron = croniter.croniter(schedule, now)
             next_run = cron.get_next(datetime)
-            prev_run = cron.get_prev(datetime)
-
-            # Run if we're past the next scheduled time
+            # Run if past the next scheduled time
             if now >= next_run:
                 return True
         except Exception as e:

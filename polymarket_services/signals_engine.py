@@ -5,11 +5,11 @@ signals_engine.py — Unified orchestrator for all Polymarket signal generators.
 Runs all signal workers, deduplicates, stores to DB.
 
 Workers:
-  1. signals_engine_legacy  — Momentum, mean-reversion, contrarian, arbitrage (core)
-  2. news_monitor           — NewsAPI corroboration/contradiction + whale news
-  3. whale_monitor          — Large trade detection (CLOB v2 + Goldsky)
-  4. orderflow_monitor      — CLOB spread analysis, orderbook imbalance (Goldsky)
-  5. catalyst_calendar     — Upcoming event mispricing
+  1. signals_engine_legacy  — Momentum, mean-reversion, contrarian, arbitrage (via pmxt)
+  2. news_monitor           — NewsAPI corroboration/contradiction + pmxt market data
+  3. whale_monitor          — Large trade detection via pmxt.fetch_trades()
+  4. orderflow_monitor      — Orderbook spread analysis via pmxt.fetch_order_book()
+  5. catalyst_calendar     — Upcoming event mispricing detection
 
 NOTE: This file IS the orchestrator — it is NOT in the workers list.
 """

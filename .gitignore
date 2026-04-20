@@ -3,3 +3,4 @@ supervisor/supervisor.db
 __pycache__/
 *.pyc
 logs/
+*.pyc

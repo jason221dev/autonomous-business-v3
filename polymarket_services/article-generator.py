@@ -4,18 +4,20 @@ Polymarket Article Generator — Insights-first, Recommendations only when they 
 ============================================================================================
 Architecture:
   1. Every article is an editorial INSIGHT about a market.
-  2. A RECOMMENDATION (entry/target/stop) is only published when it adds genuine edge.
-  3. Recommendations are NOT generated separately — they are a conditional output of analysis.
+  2. A RECOMMENDATION (entry/target/stop) is ONLY published when a live signal
+     in the DB confirms extra value — NOT generated from hardcoded baselines.
+  3. Market selection is ranked by signal confidence: highest-confidence signals first.
 
-When does a recommendation add value?
-  - CONTRARIAN: Polymarket odds diverge >10% from an obvious external baseline
-  - CATALYST: Upcoming event with a clear dominant outcome the market hasn't fully priced
-  - ASYMMETRIC: Exit point clearly exceeds what fair value + fees justify
-  - MOMENTUM CONFIRMED: Volume + price action strongly supports a side at current odds
+Signal-to-Recommendation flow:
+  - Fetch markets via pmxt (live Polymarket data)
+  - For each market, query signals DB for active signals (whale/catalyst/orderflow/news/contrarian)
+  - Only write an article if a signal exists AND the signal has a direction
+  - Recommendation uses the signal's stored direction, confidence, rationale
+  - Fallback to baseline checks ONLY if no DB signal exists (catch-all)
 """
 import sys
 import json
-import requests
+import subprocess
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,90 +26,66 @@ from random import shuffle, random
 MINIMAX_API = "https://api.minimax.io/anthropic/v1/messages"
 MINIMAX_KEY = "sk-cp-rtpYtXvl0PyCng80lkRXn_3tAkWJhQPKav5vnCy6P6JGFvTVf_b77XpbomU2gHYtQh1iqSKMTQ9huKSz5oFDMdNI4s_mN3x5jDMbiHdfQeP5VgkraPsszR8"
 MODEL = "MiniMax-M2.5"
-GAMMA_API = "https://gamma-api.polymarket.com"
 REFERRAL = "Predict221"
 ARTICLES_DIR = Path("/var/www/polymarket-site/articles")
 ARTICLES_DIR.mkdir(parents=True, exist_ok=True)
+PMXT_HELPER = "/usr/bin/python3 /tmp/pmxt_markets.py"
 
 sys.path.insert(0, '/opt/polymarket')
 try:
     from signals_db import (
         init_db, get_active_signals, get_active_contrarian,
         get_active_arbitrage, get_record, insert_signal,
-        get_recent_results
+        get_active_whale_signals, get_active_catalyst_signals,
+        get_active_orderflow_signals, get_active_news_signals,
+        get_active_contrarian as get_active_contrarian_sig,
     )
     DB_OK = True
-except Exception:
+except Exception as e:
     DB_OK = False
+    print(f"  ⚠️ signals_db import failed: {e}")
 
 
-# ─── MiniMax ──────────────────────────────────────────────────────────────────
+# ─── pmxt Market Fetching ───────────────────────────────────────────────────────
 
-def call_minimax(prompt, max_tokens=2500):
-    data = {
-        "model": MODEL,
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    req = urllib.request.Request(
-        MINIMAX_API,
-        data=json.dumps(data).encode(),
-        headers={
-            "Authorization": f"Bearer {MINIMAX_KEY}",
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
-        }
-    )
+def get_markets_via_pmxt(limit: int = 50) -> list:
+    """Fetch open markets via pmxt helper — the live Polymarket API."""
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read())
-        for block in result.get("content", []):
-            if block.get("type") == "text":
-                return block.get("text", "")
-    except Exception as e:
-        print(f"  ⚠️ MiniMax error: {e}")
-    return ""
-
-
-# ─── Market Fetching ──────────────────────────────────────────────────────────
-
-def get_markets(limit=20):
-    """Fetch open markets sorted by volume"""
-    try:
-        resp = requests.get(
-            f"{GAMMA_API}/markets",
-            params={"limit": limit, "closed": "false"},
-            timeout=15
+        cmd = f"{PMXT_HELPER} {limit}"
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=20
         )
-        data = resp.json()
-        return data if isinstance(data, list) else data.get("data", [])
+        if result.returncode != 0:
+            print(f"  ⚠️ pmxtMarkets failed: {result.stderr[:200]}")
+            return []
+        data = json.loads(result.stdout)
+        return data if isinstance(data, list) else []
     except Exception as e:
         print(f"  ⚠️ Failed to fetch markets: {e}")
         return []
 
 
-def parse_market(market: dict) -> dict | None:
-    """Normalize market data from various API response formats"""
+def parse_market(mkt: dict) -> dict | None:
+    """Normalize market data from pmxt helper output."""
     try:
-        slug = market.get("slug", "")
-        question = market.get("question", "")
-        volume = float(market.get("volume", 0) or 0)
+        slug = mkt.get("slug", "")
+        question = mkt.get("question", "") or mkt.get("title", "")
+        volume = float(mkt.get("volume", 0) or 0)
 
         if volume < 5000 or not question:
             return None
 
-        # Parse prices
-        raw_prices = market.get("outcomePrices", [])
-        if isinstance(raw_prices, str):
-            try:
-                raw_prices = json.loads(raw_prices)
-            except:
-                raw_prices = []
-        if not isinstance(raw_prices, list):
-            raw_prices = []
+        yes_price = float(mkt.get("yes", 0.5))
+        no_price = float(mkt.get("no", 1.0 - yes_price))
 
-        yes_price = float(raw_prices[0]) if len(raw_prices) > 0 else 0.50
-        no_price = float(raw_prices[1]) if len(raw_prices) > 1 else 1.0 - yes_price
+        # end_date may be datetime object or string
+        end_date_raw = mkt.get("end_date") or mkt.get("resolution_date") or ""
+        if hasattr(end_date_raw, 'strftime'):
+            end_date_str = end_date_raw.strftime("%Y-%m-%dT%H:%M:%S")
+        elif end_date_raw:
+            end_date_str = str(end_date_raw)
+        else:
+            end_date_str = ""
 
         return {
             "slug": slug,
@@ -115,13 +93,15 @@ def parse_market(market: dict) -> dict | None:
             "yes_price": yes_price,
             "no_price": no_price,
             "volume": volume,
-            "liquidity": float(market.get("liquidity", 0) or 0),
+            "volume_24h": float(mkt.get("volume_24h", 0) or 0),
+            "liquidity": float(mkt.get("liquidity", 0) or 0),
+            "outcome_id": mkt.get("outcome_id", ""),
             "url": f"https://polymarket.com/market/{slug}",
             "referral": f"https://polymarket.com/?r={REFERRAL}&goto=market&slug={slug}",
             "category": _categorize(question),
-            "end_date": market.get("end_date", ""),
+            "end_date": end_date_str,
         }
-    except Exception:
+    except Exception as e:
         return None
 
 
@@ -135,21 +115,155 @@ def _categorize(question: str) -> str:
         return "economy"
     if any(k in q for k in ["china", "russia", "iran", "israel", "war", "nato", "taiwan"]):
         return "geopolitics"
-    if any(k in q for k in ["nba", "nfl", "football", "soccer", "election"]):
+    if any(k in q for k in ["nba", "nfl", "football", "soccer"]):
         return "sports"
     return "general"
 
 
-# ─── Recommendation Evaluator ──────────────────────────────────────────────────
+# ─── Signal-to-Recommendation Engine ──────────────────────────────────────────
+
+def get_signals_for_market(slug: str) -> dict | None:
+    """
+    Query all 5 signal tables for active signals on this market slug.
+    Returns the highest-confidence signal dict, or None if no signal exists.
+
+    This is the core of Jason's insight-first architecture:
+    recommendations only come from real signals, not generated baselines.
+    """
+    if not DB_OK:
+        return None
+
+    all_signals = []
+
+    try:
+        # whale_signals — large trade / mega-whale / price momentum
+        for s in get_active_whale_signals(limit=10):
+            if s.get("market_slug") == slug and s.get("confidence", 0) >= 0.55:
+                all_signals.append(("whale", s))
+
+        # catalyst_signals — upcoming event / geopolitics / crypto catalyst
+        for s in get_active_catalyst_signals(limit=10):
+            if s.get("market_slug") == slug and s.get("confidence", 0) >= 0.60:
+                all_signals.append(("catalyst", s))
+
+        # orderflow_signals — spread widening / book imbalance / divergence
+        for s in get_active_orderflow_signals(limit=10):
+            if s.get("market_slug") == slug and s.get("confidence", 0) >= 0.55:
+                all_signals.append(("orderflow", s))
+
+        # news_signals — news corroboration / contradiction
+        for s in get_active_news_signals(limit=10):
+            if s.get("market_slug") == slug and s.get("confidence", 0) >= 0.55:
+                all_signals.append(("news", s))
+
+        # contrarian_signals — odds diverge from historical baseline
+        for s in get_active_contrarian_sig(limit=10):
+            if s.get("market_slug") == slug and s.get("divergence", 0) >= 0.08:
+                all_signals.append(("contrarian", s))
+
+    except Exception as e:
+        print(f"  ⚠️ Signal DB query error: {e}")
+        return None
+
+    if not all_signals:
+        return None
+
+    # Return highest-confidence signal
+    best = max(all_signals, key=lambda x: x[1].get("confidence", 0) or x[1].get("divergence", 0))
+    return {"source": best[0], **best[1]}
+
+
+def build_rec_from_signal(signal: dict, market: dict) -> dict | None:
+    """
+    Convert a live DB signal into a publishable recommendation.
+    Uses signal's direction, confidence, entry/target/stop if available.
+    Falls back to calculating from market price if signal lacks precise levels.
+    """
+    source = signal.get("source", "signal")
+    sig_type = signal.get("signal_type") or signal.get("catalyst_type") or signal.get("trigger_type") or source
+    direction = signal.get("direction") or signal.get("side", "")
+    confidence = signal.get("confidence", 0.65)
+    yes = market["yes_price"]
+    no = market["no_price"]
+
+    if not direction:
+        return None
+
+    # Use stored entry/target/stop if available (signal workers set these)
+    entry_price = signal.get("entry_price") or signal.get("target_price") or None
+    target_price = signal.get("target_price") or None
+    stop_loss = signal.get("stop_loss") or None
+
+    # Calculate from price if not stored
+    if direction == "YES":
+        if entry_price is None:
+            entry_price = round(yes + 0.01, 4)
+        if target_price is None:
+            # Target: move 15-20% toward 1.0
+            target_price = round(min(yes + 0.18, 0.97), 4)
+        if stop_loss is None:
+            stop_loss = round(max(yes - 0.06, 0.25), 4)
+    else:  # NO
+        if entry_price is None:
+            entry_price = round(no + 0.01, 4)
+        if target_price is None:
+            # Target: move 15% toward 0
+            target_price = round(max(no - 0.15, 0.02), 4)
+        if stop_loss is None:
+            stop_loss = round(min(no + 0.06, 0.75), 4)
+
+    # R/R calculation
+    if direction == "YES":
+        risk = entry_price - stop_loss
+        reward = target_price - entry_price
+    else:
+        risk = stop_loss - entry_price
+        reward = entry_price - target_price
+
+    if risk <= 0:
+        return None
+
+    rr = reward / risk
+
+    # Rationale from signal or fallback
+    rationale = signal.get("rationale") or (
+        f"{sig_type.title()} signal: {source} detected. "
+        f"Confidence {confidence:.0%}."
+    )
+
+    # Source labels
+    source_labels = {
+        "whale": "Whale Signal",
+        "catalyst": "Catalyst Signal",
+        "orderflow": "Orderflow Signal",
+        "news": "News Signal",
+        "contrarian": "Contrarian Signal",
+    }
+    type_label = source_labels.get(source, f"{source.title()} Signal")
+
+    return {
+        "type": sig_type,
+        "type_label": type_label,
+        "side": direction,
+        "entry": entry_price,
+        "target": target_price,
+        "stop": stop_loss,
+        "risk_reward": round(rr, 2),
+        "confidence": round(confidence, 3),
+        "rationale": rationale,
+    }
+
+
+# ─── Fallback Baseline Evaluator ──────────────────────────────────────────────
+# Only used when no live signal exists in DB for a market.
+
 
 class RecommendationEvaluator:
     """
-    Decides whether a recommendation adds genuine value to an insight.
+    Fallback: Decides whether a recommendation adds genuine value using
+    hardcoded baselines. Only reached when get_signals_for_market() returns None.
 
-    A recommendation is ONLY published when it provides extra value beyond
-    "the market already tells you what to do at current odds."
-
-    Returns a dict with recommendation data if it qualifies, None otherwise.
+    This is the catch-all — ideally most articles go through the signal path above.
     """
 
     def __init__(self, market: dict, insight: dict):
@@ -162,34 +276,24 @@ class RecommendationEvaluator:
         self.q_lower = self.question.lower()
 
     def evaluate(self) -> dict | None:
-        """
-        Returns recommendation dict if it adds value, None if not worth publishing.
-        """
-        # Check each value-add criterion
-        rec = None
-
-        # 1. Contrarian check
         rec = self._check_contrarian()
         if rec:
             rec["type"] = "contrarian"
             rec["type_label"] = "Contrarian Edge"
             return rec
 
-        # 2. Catalyst check
         rec = self._check_catalyst()
         if rec:
             rec["type"] = "catalyst"
             rec["type_label"] = "Catalyst-Driven"
             return rec
 
-        # 3. Asymmetric R/R check
         rec = self._check_asymmetric()
         if rec:
             rec["type"] = "asymmetric"
             rec["type_label"] = "Asymmetric R/R"
             return rec
 
-        # 4. Momentum confirmation (only if volume is strong AND odds in sweet spot)
         rec = self._check_momentum()
         if rec:
             rec["type"] = "momentum"
@@ -199,45 +303,19 @@ class RecommendationEvaluator:
         return None
 
     def _check_contrarian(self) -> dict | None:
-        """
-        Contrarian value: Polymarket odds diverge significantly from
-        what an obvious external reference suggests.
-
-        Examples:
-        - PM shows 30% for X, but crypto markets are pricing 60%+ for X
-        - PM shows 72% for Fed cut, but Fed guidance implies <20%
-        - PM shows 55% for candidate win, but polling average shows 45%
-        """
-        divergence_threshold = 0.10  # 10 percentage points
-
-        # External baselines (approximate real-world references)
+        divergence_threshold = 0.10
         baselines = {}
 
-        # Bitcoin halving effect — historically 6-12 months post-halving, BTC trends up strongly
         if any(k in self.q_lower for k in ["bitcoin", "btc"]):
-            baselines["btc_12m"] = 0.65  # Historical post-halving probability of new highs
-
-        # Fed rate cuts — market consensus vs actual Fed signals
+            baselines["btc_12m"] = 0.65
         if "fed" in self.q_lower and "cut" in self.q_lower:
-            baselines["fed_cuts"] = 0.30  # Fed has signaled restraint
-
-        # Election markets — PM vs polling averages
+            baselines["fed_cuts"] = 0.30
         if any(k in self.q_lower for k in ["win the election", "be elected", "president"]):
-            # If PM shows >55% for one candidate, real polling is usually closer
-            if self.yes > 0.55:
-                baselines["polling"] = self.yes - 0.08  # PM premium
-            elif self.yes < 0.45:
-                baselines["polling"] = self.yes + 0.08
-
-        # Inflation — markets often under-react to inflation risks
+            baselines["polling"] = self.yes - 0.08 if self.yes > 0.55 else self.yes + 0.08
         if "inflation" in self.q_lower:
-            if self.yes < 0.50:
-                baselines["inflation_risk"] = 0.65  # Inflation is stickier than priced
-
-        # War/conflict — PM often underprices geopolitical tail risks
+            baselines["inflation_risk"] = 0.65
         if any(k in self.q_lower for k in ["war", "invasion", "attack", "conflict"]):
-            if self.yes < 0.40:
-                baselines["tail_risk"] = 0.55  # Geopolitical tail risks underpriced
+            baselines["tail_risk"] = 0.55
 
         if not baselines:
             return None
@@ -248,11 +326,10 @@ class RecommendationEvaluator:
                 direction = "YES" if baseline_prob > self.yes else "NO"
                 edge = abs(baseline_prob - self.yes)
 
-                # Calculate entry, target, stop
                 if direction == "YES":
-                    entry = self.yes + 0.01  # slightly above current to confirm
-                    target = baseline_prob - 0.02  # aim for fair value
-                    stop = self.yes - 0.05  # allow 5% buffer
+                    entry = self.yes + 0.01
+                    target = baseline_prob - 0.02
+                    stop = self.yes - 0.05
                 else:
                     entry = self.no + 0.01
                     target = (1 - baseline_prob) - 0.02
@@ -265,49 +342,29 @@ class RecommendationEvaluator:
         return None
 
     def _check_catalyst(self) -> dict | None:
-        """
-        Catalyst-driven value: An event is coming that has a clear dominant outcome,
-        but the market hasn't fully priced it yet.
-        """
-        # Event categories with implied catalysts
-        catalyst_thresholds = {
-            "election": 14,   # days before election
-            "fed": 7,         # days before FOMC
-            "gdp": 5,        # days before GDP release
-            "inflation": 5,   # days before CPI
-            "earnings": 3,    # days before earnings
-            "court": 14,      # days before Supreme Court ruling
-        }
-
-        # Parse end_date if available
         end_date_str = self.market.get("end_date", "")
         if not end_date_str:
             return None
-
         try:
             end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
         except Exception:
             return None
 
-        days_until = (end_date - datetime.now()).days
+        days_until = (end_date - datetime.now().astimezone()).days
 
-        # Fed meetings — market pricing of cuts is often wrong
         if "fed" in self.q_lower or "rate" in self.q_lower:
-            if days_until <= 14 and days_until >= 0:
-                # PM odds for "no cut" being >70% — potential buy on "cut" if catalyst strong
-                if self.no > 0.70 and "cut" in self.q_lower.lower():
+            if 0 <= days_until <= 14:
+                if self.no > 0.70 and "cut" in self.q_lower:
                     direction = "YES"
                     entry = self.yes + 0.01
                     target = min(self.yes + 0.15, 0.95)
                     stop = max(self.yes - 0.08, 0.20)
                     return self._build_rec(direction, entry, target, stop, 0.75,
-                        f"Catalyst: FOMC meeting in {days_until} days. Market pricing {self.no:.0%} for no cut — historically overstated.")
+                        f"Catalyst: FOMC in {days_until} days. No-cut priced at {self.no:.0%} — historically overstated.")
 
-        # Earnings — implied move often wider than actual
-        if "apple" in self.q_lower or "nvidia" in self.q_lower or "meta" in self.q_lower:
+        if any(k in self.q_lower for k in ["apple", "nvidia", "meta", "google", "amazon"]):
             if 0 <= days_until <= 7:
-                # High implied volatility — potential vol crush after
-                if self.yes > 0.30 and self.yes < 0.70:
+                if 0.30 < self.yes < 0.70:
                     direction = "YES" if self.yes > 0.55 else "NO"
                     entry = self.yes + 0.01 if direction == "YES" else self.no + 0.01
                     target = self.yes + 0.10 if direction == "YES" else self.no - 0.08
@@ -315,41 +372,30 @@ class RecommendationEvaluator:
                     return self._build_rec(direction, entry, target, stop, 0.65,
                         f"Catalyst: Earnings in {days_until} day(s). Implied move suggests range-bound outcome not fully priced.")
 
-        # US elections — PM is usually closer to reality but there is a systematic D/R premium
         if any(k in self.q_lower for k in ["win the 2026", "2026 presidential"]):
-            if days_until <= 30:
-                # Recent polling suggests tighter race than PM
+            if 0 <= days_until <= 30:
                 if 0.40 < self.yes < 0.60:
                     direction = "YES" if self.yes < 0.50 else "NO"
                     entry = self.yes + 0.01 if direction == "YES" else self.no + 0.01
                     target = self.yes + 0.12 if direction == "YES" else self.no - 0.10
                     stop = max(self.yes - 0.06, 0.25) if direction == "YES" else max(self.no - 0.06, 0.25)
                     return self._build_rec(direction, entry, target, stop, 0.68,
-                        f"Catalyst: Election in {days_until} days. Odds at {self.yes:.0%} — recent polling tightening suggests value on {'YES' if self.yes < 0.50 else 'NO'}.")
+                        f"Catalyst: Election in {days_until} days. Odds at {self.yes:.0%} — recent polling tightening suggests value.")
 
         return None
 
     def _check_asymmetric(self) -> dict | None:
-        """
-        Asymmetric R/R value: The target is clearly justified by market structure,
-        fees are low enough to allow profit, and the R/R ratio is compelling.
-        """
-        # Only consider if R/R > 2.5:1 (genuinely asymmetric)
         min_rr = 2.5
-
-        # High-confidence markets where target is obvious
         if self.yes > 0.70:
-            # Clear favorite — target above 90% should be achievable
             target = min(self.yes + 0.18, 0.97)
             stop = max(self.yes - 0.06, 0.40)
             side = "YES"
         elif self.yes < 0.30:
-            # Clear underdog — target is approaching 0
             target = max(self.yes - 0.15, 0.02)
             stop = min(self.yes + 0.08, 0.60)
             side = "NO"
         else:
-            return None  # No obvious asymmetric case
+            return None
 
         if side == "YES":
             risk = self.yes - stop
@@ -366,68 +412,47 @@ class RecommendationEvaluator:
             return None
 
         confidence = 0.75 if self.yes > 0.80 or self.yes < 0.20 else 0.68
-        rationale = (
-            f"Asymmetric: Market at {self.yes:.0%} leaves {rr:.1f}:1 R/R. "
-            f"Target {target:.0%} is reachable with typical post-event movement."
-        )
+        rationale = f"Asymmetric: Market at {self.yes:.0%} leaves {rr:.1f}:1 R/R. Target {target:.0%} is reachable with typical post-event movement."
         entry = self.yes + 0.01 if side == "YES" else self.no + 0.01
         return self._build_rec(side, entry, target, stop, confidence, rationale)
 
     def _check_momentum(self) -> dict | None:
-        """
-        Momentum confirmed value: Volume + price movement strongly supports
-        a side, but ONLY if the R/R is genuinely compelling (>= 2.5:1).
-        """
-        # Need significant volume for momentum claim
         if self.volume < 50000:
             return None
-
-        # Only in the "too close to call" zone where momentum can shift odds meaningfully
         if self.yes < 0.20 or self.yes > 0.80:
             return None
+        if 0.35 <= self.yes <= 0.65 and self.volume > 200000:
+            direction = "YES" if self.yes > 0.52 else "NO"
+            entry = self.yes + 0.01 if direction == "YES" else self.no + 0.01
+            target = self.yes + 0.18 if direction == "YES" else self.no - 0.15
+            stop = self.yes - 0.06 if direction == "YES" else self.no + 0.06
 
-        # For 35-65% range — momentum can push toward extremes
-        if 0.35 <= self.yes <= 0.65:
-            # Strong recent volume suggests directional bias
-            if self.volume > 200000:
-                direction = "YES" if self.yes > 0.52 else "NO"
-                entry = self.yes + 0.01 if direction == "YES" else self.no + 0.01
-                # Target: 15-20% move from current price
-                target = self.yes + 0.18 if direction == "YES" else self.no - 0.15
-                # Stop: 6% against the trade
-                stop = self.yes - 0.06 if direction == "YES" else self.no + 0.06
+            if direction == "YES":
+                risk = entry - stop
+                reward = target - entry
+            else:
+                risk = stop - entry
+                reward = entry - target
 
-                # Calculate R/R — must be >= 2.5:1 to publish
-                if direction == "YES":
-                    risk = entry - stop
-                    reward = target - entry
-                else:
-                    risk = entry - stop
-                    reward = entry - target
+            if risk <= 0:
+                return None
+            rr = reward / risk
+            if rr < 2.5:
+                return None
 
-                if risk <= 0:
-                    return None
-                rr = reward / risk
-                if rr < 2.5:
-                    return None  # R/R not compelling enough — no recommendation
-
-                confidence = 0.65
-                rationale = (
-                    f"Momentum: ${self.volume/1000:.0f}K in volume at {self.yes:.0%} suggests "
-                    f"institutional positioning. Directional move likely — {rr:.1f}:1 R/R."
-                )
-                return self._build_rec(direction, entry, target, stop, confidence, rationale)
+            confidence = 0.65
+            rationale = f"Momentum: ${self.volume/1000:.0f}K in volume at {self.yes:.0%} suggests institutional positioning. {rr:.1f}:1 R/R."
+            return self._build_rec(direction, entry, target, stop, confidence, rationale)
 
         return None
 
     def _build_rec(self, side: str, entry: float, target: float,
                    stop: float, confidence: float, rationale: str) -> dict:
-        """Build a recommendation dict"""
         if side == "YES":
             risk = entry - stop
             reward = target - entry
         else:
-            risk = entry - stop
+            risk = stop - entry
             reward = entry - target
         rr = reward / risk if risk > 0 else 0
         return {
@@ -441,12 +466,13 @@ class RecommendationEvaluator:
         }
 
 
-# ─── Article Generation ────────────────────────────────────────────────────────
+# ─── Article Generation ───────────────────────────────────────────────────────
 
-def generate_insight_article(market: dict) -> str | None:
+def generate_insight_article(market: dict, signal: dict | None = None) -> str | None:
     """
     Generate an editorial insight article about a market.
-    A recommendation block is conditionally included ONLY if it adds genuine value.
+    If a live signal is provided, use it to drive the recommendation.
+    Falls back to baseline evaluator if no signal exists.
     """
     parsed = parse_market(market)
     if not parsed:
@@ -478,66 +504,108 @@ def generate_insight_article(market: dict) -> str | None:
 
     stance, stance_desc = get_stance(yes)
 
-    # ── Run MiniMax analysis first ──────────────────────────────────────────
-    insight_prompt = f"""Write a high-quality editorial INSIGHT article about the prediction market question: "{question}"
+    # ── Determine if a recommendation is warranted ───────────────────────────
+    rec = None
+    if signal:
+        rec = build_rec_from_signal(signal, parsed)
 
-CURRENT MARKET DATA:
-- Current YES probability: {yes:.1%}
-- 24h volume: ${vol:,.0f}
-- Market stance: "{stance}" — market sees this as {stance_desc}
+    if not rec:
+        insight_data = {"stance": stance, "stance_desc": stance_desc, "volume": vol}
+        evaluator = RecommendationEvaluator(parsed, insight_data)
+        rec = evaluator.evaluate()
 
-CONTEXT:
-- Category: {cat.capitalize()}
-- Resolution date: {end_date[:10] if end_date else 'Open-ended'}
+    # ── Build signal context for prompt ─────────────────────────────────────
+    sig_src = ""
+    sig_type = ""
+    sig_conf = 0
+    sig_dir = ""
+    sig_rat = ""
+    if signal:
+        sig_src = signal.get("source", "signal").upper()
+        sig_type = signal.get("signal_type") or signal.get("catalyst_type") or signal.get("trigger_type", "detected")
+        sig_conf = signal.get("confidence", 0)
+        sig_dir = signal.get("direction") or signal.get("side", "")
+        sig_rat = (signal.get("rationale") or "")[:200]
 
-WRITE THE ARTICLE WITH THIS EXACT STRUCTURE:
+    # ── Build article prompt using explicit string parts ─────────────────────
+    # (avoids triple-quoted f-string parser issues in Python 3.12)
+    yes_pct = f"{yes:.1%}"
+    no_pct = f"{no:.1%}"
+    vol_fmt = f"${vol:,.0f}"
+    conf_pct = f"{sig_conf:.0%}"
+    end_date_fmt = end_date[:10] if end_date else "Open-ended"
+    stance_esc = stance.replace('"', '\"')
+    question_esc = question.replace('"', '\"')
 
-1. **H1 Title** — Catchy, keyword-rich. Example: "Why the Fed's Next Move Could Shock Crypto Markets" or "Bitcoin Halving: What the {yes:.0%} Odds Actually Tell Us"
+    prompt_parts = [
+        "Write a high-quality editorial INSIGHT article about the prediction market question: \"" + question_esc + "\"\n",
+        "\n",
+        "CURRENT MARKET DATA:\n",
+        "- Current YES probability: " + yes_pct + "\n",
+        "- 24h volume: " + vol_fmt + "\n",
+        "- Market stance: \"" + stance_esc + "\" — market sees this as " + stance_desc + "\n",
+        "- Category: " + cat.capitalize() + "\n",
+        "- Resolution date: " + end_date_fmt + "\n",
+        "\n",
+    ]
 
-2. **Market Snapshot** (styled box):
-   - Current Odds: {yes:.1%} YES / {no:.1%} NO
-   - Volume: ${vol:,.0f}
-   - Stance: {stance}
+    if signal:
+        prompt_parts += [
+            "LIVE SIGNAL DETECTED (confidence: " + conf_pct + "):\n",
+            "- Signal source: " + sig_src + "\n",
+            "- Type: " + sig_type + "\n",
+            "- Direction: " + sig_dir + "\n",
+            "- Rationale: " + sig_rat + "\n",
+            "\n",
+            "Incorporate this signal context naturally into the article narrative.\n",
+            "If a recommendation block is included, use the signal's direction and rationale.\n",
+        ]
+    else:
+        prompt_parts += [
+            "No active signal in our system for this market — article will be insight-only.\n",
+            "Do NOT include a trade recommendation unless the market naturally warrants it.\n",
+        ]
 
-3. **What's Happening** (150 words): The current situation. What's driving the market right now. What participants are thinking.
+    prompt_parts += [
+        "\n",
+        "WRITE THE ARTICLE WITH THIS EXACT STRUCTURE:\n",
+        "\n",
+        "1. **H1 Title** — Catchy, keyword-rich. Example: \"Why the Fed's Next Move Could Shock Crypto Markets\"\n",
+        "\n",
+        "2. **Market Snapshot** (styled box):\n",
+        "   - Current Odds: " + yes_pct + " YES / " + no_pct + " NO\n",
+        "   - Volume: " + vol_fmt + "\n",
+        "   - Stance: " + stance_esc + "\n",
+        "\n",
+        "3. **What's Happening** (150 words): The current situation. What's driving the market right now.\n",
+        "\n",
+        "4. **Why It Matters** (150 words): Why this market is worth watching beyond the obvious outcome.\n",
+        "\n",
+        "5. **What the Odds Don't Tell You** (150 words): Interesting nuance, historical context, or angle the current price doesn't fully reflect.\n",
+        "\n",
+        "6. **Timeline & Resolution** (100 words): When does this resolve? Key date or event to watch.\n",
+        "\n",
+        "7. **What Could Change the Odds** (100 words): Factors that could move the market before resolution.\n",
+        "\n",
+        "8. **CTA**: If you're interested in this market, you can trade it on Polymarket → https://polymarket.com/?r=" + REFERRAL + "\n",
+        "\n",
+        "9. **FAQ**: 3 natural questions a curious reader would ask, answered concisely.\n",
+        "\n",
+        "10. **Disclaimer**: Not financial advice.\n",
+        "\n",
+        "TONE: Informed, analytical, like a premium research newsletter. Specific numbers. No fluff.\n",
+        "LENGTH: 800-1000 words. Include the affiliate link naturally once.\n",
+        "FORMAT: Use H2 headers. No trade alert box unless genuinely warranted.",
+    ]
 
-4. **Why It Matters** (150 words): Why this market is worth watching. What makes it interesting beyond the obvious outcome.
-
-5. **What the Odds Don't Tell You** (150 words): Interesting nuance, historical context, or angle that the current price doesn't fully reflect.
-
-6. **Timeline & Resolution** (100 words): When does this resolve? What's the key date or event? What to watch between now and then.
-
-7. **What Could Change the Odds** (100 words): Factors that could move the market higher or lower before resolution.
-
-8. **CTA**: If you're interested in this market, you can trade it on Polymarket → https://polymarket.com/?r={REFERRAL}
-
-9. **FAQ**: 3 natural questions a curious reader would ask, answered concisely.
-
-10. **Disclaimer**: Not financial advice.
-
-TONE: Informed, analytical, like a premium research newsletter (Bloomberg, The Breakdown). Specific numbers. No fluff. This is about understanding the market deeply.
-LENGTH: 800-1000 words. Include the affiliate link naturally once.
-FORMAT: Use H2 headers. No trade alert box unless genuinely warranted."""
-
+    insight_prompt = "".join(prompt_parts)
 
     content = call_minimax(insight_prompt)
     if not content:
         return None
 
-    # ── Evaluate whether a recommendation adds value ────────────────────────
-    insight_data = {
-        "stance": stance,
-        "stance_desc": stance_desc,
-        "volume": vol,
-    }
-    evaluator = RecommendationEvaluator(parsed, insight_data)
-    rec = evaluator.evaluate()
-
     # ── Build HTML ───────────────────────────────────────────────────────────
-    if rec:
-        rec_html = _build_recommendation_block(rec)
-    else:
-        rec_html = ""
+    rec_html = _build_recommendation_block(rec) if rec else ""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -545,7 +613,7 @@ FORMAT: Use H2 headers. No trade alert box unless genuinely warranted."""
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{question[:80]} — Insight | Predict221</title>
-    <meta name="description" content="{question[:150]}. Current odds: {yes:.1%} | ${vol:,.0f} traded. Insight and analysis from Predict221.">
+    <meta name="description" content="{question[:150]} Current odds: {yes_pct} | {vol_fmt} traded. Insight and analysis from Predict221.">
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; }}
         h1 {{ color: #58a6ff; font-size: 1.7em; margin: 25px 0 10px; }}
@@ -576,23 +644,23 @@ FORMAT: Use H2 headers. No trade alert box unless genuinely warranted."""
 <body>
     <p><a href="/">← Predict221</a> <span style="color:#6e7681;margin-left:10px">|</span> <span style="margin-left:10px">{cat.capitalize()}</span></p>
     <h1>{question}</h1>
-    
+
     <div class="snapshot">
-        <div class="prob">{yes:.1%} YES</div>
-        <div class="labels">{yes:.1%} YES · {no:.1%} NO · ${vol:,.0f} traded · {stance}</div>
+        <div class="prob">{yes_pct} YES</div>
+        <div class="labels">{yes_pct} YES · {no_pct} NO · {vol_fmt} traded · {stance}</div>
     </div>
-    
+
     {rec_html}
-    
+
     <div class="meta">
         Market stance: <strong>{stance}</strong> — {stance_desc}.
         <a href="{url}" style="margin-left:10px">View on Polymarket ↗</a>
     </div>
-    
+
     {content}
-    
+
     <a href="{referral}" class="cta">Analyze This Market on Polymarket →</a>
-    
+
     <div class="disclaimer">
         <strong>Not financial advice.</strong> Prediction markets are speculative. This analysis is for educational purposes.
         Our track record: <a href="/record" style="color:#58a6ff;">transparent record →</a>
@@ -606,8 +674,9 @@ FORMAT: Use H2 headers. No trade alert box unless genuinely warranted."""
     return str(filepath)
 
 
+
 def _build_recommendation_block(rec: dict) -> str:
-    """Build the recommendation HTML block for a qualifying recommendation"""
+    """Build the recommendation HTML block."""
     side = rec["side"]
     entry = rec["entry"]
     target = rec["target"]
@@ -616,7 +685,6 @@ def _build_recommendation_block(rec: dict) -> str:
     conf = rec["confidence"]
     rationale = rec["rationale"]
     type_label = rec.get("type_label", "Trade Setup")
-    rec_type_class = rec.get("type", "setup").lower()
 
     return f"""
 <div class="rec-box">
@@ -634,70 +702,140 @@ def _build_recommendation_block(rec: dict) -> str:
 </div>"""
 
 
+# ─── MiniMax ──────────────────────────────────────────────────────────────────
+
+def call_minimax(prompt, max_tokens=2500):
+    data = {
+        "model": MODEL,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    req = urllib.request.Request(
+        MINIMAX_API,
+        data=json.dumps(data).encode(),
+        headers={
+            "Authorization": f"Bearer {MINIMAX_KEY}",
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+        for block in result.get("content", []):
+            if block.get("type") == "text":
+                return block.get("text", "")
+    except Exception as e:
+        print(f"  ⚠️ MiniMax error: {e}")
+    return ""
+
+
 # ─── Main CLI ─────────────────────────────────────────────────────────────────
 
 def main():
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 5
     cmd = sys.argv[1] if len(sys.argv) > 1 else "generate"
 
+    if cmd == "signals-only":
+        # Lightweight: refresh signals dashboard HTML without generating articles
+        print("📊 Refreshing signals dashboard...")
+        refresh_signals_dashboard()
+        return
+
     if cmd == "generate":
-        print(f"📰 Fetching markets...\n")
-        markets = get_markets(limit=count * 2)
-        shuffle(markets)
+        print(f"📰 Fetching markets via pmxt...\n")
+        raw_markets = get_markets_via_pmxt(limit=count * 3)
+        markets = [m for m in raw_markets if parse_market(m)]
 
         # Filter to ones we haven't covered
         existing = {p.stem for p in ARTICLES_DIR.glob("*.html")}
         new_markets = [m for m in markets if parse_market(m) and parse_market(m)["slug"] not in existing]
-        new_markets = new_markets[:count]
 
-        print(f"📝 Generating {len(new_markets)} insight articles...\n")
+        # ── Signal-ranked selection: prioritize markets with active DB signals ──
+        def signal_rank(mkt):
+            parsed = parse_market(mkt)
+            if not parsed:
+                return -1
+            sig = get_signals_for_market(parsed["slug"])
+            if not sig:
+                return -1
+            return sig.get("confidence", 0) or sig.get("divergence", 0) or -1
+
+        # Sort: markets with signals first (by confidence desc), then shuffle remaining
+        new_markets.sort(key=signal_rank, reverse=True)
+
+        # Take top N with signals + some without to diversify
+        with_signals = [m for m in new_markets if signal_rank(m) > 0]
+        without_signals = [m for m in new_markets if signal_rank(m) <= 0]
+        shuffle(without_signals)
+
+        # Target: ~50% from signal-ranked, rest fill remaining slots
+        target_with = min(count // 2 + 1, len(with_signals))
+        selected = with_signals[:target_with] + without_signals[:count - target_with]
+        shuffle(selected)
+
+        print(f"📝 Generating {len(selected)} insight articles ({len(with_signals)} signal-backed, {len(without_signals)} baseline)...\n")
+
         generated = 0
         recs_published = 0
-        for i, m in enumerate(new_markets, 1):
+        for i, m in enumerate(selected, 1):
             parsed = parse_market(m)
             if not parsed:
                 continue
             slug = parsed["slug"]
             question = parsed["question"][:60]
 
-            # Quick check: would this even have a recommendation?
-            evaluator = RecommendationEvaluator(parsed, {})
-            rec = evaluator.evaluate()
+            # Check for live signal
+            sig = get_signals_for_market(slug)
+            rec_label = f"📊 {sig.get('source', 'signal').upper()}" if sig else "📄"
 
-            print(f"[{i}] {'📊 WITH REC' if rec else '📄'} {question}...")
-            path = generate_insight_article(m)
+            print(f"[{i}] {rec_label} {question}...")
+            path = generate_insight_article(m, signal=sig)
             if path:
                 generated += 1
-                if rec:
+                if sig:
                     recs_published += 1
-                    print(f"    ✅ INSIGHT + RECOMMENDATION ({rec['type']}, {rec['risk_reward']:.1f}:1 R/R)")
-                    # Store signal for tracking
+                    print(f"    ✅ SIGNAL-BACKED RECOMMENDATION ({sig.get('source', 'db')}, conf={sig.get('confidence', 0):.0%})")
                     if DB_OK:
                         try:
                             init_db()
-                            signal_id = insert_signal(
-                                signal_type=rec["type"],
-                                market_slug=slug,
-                                question=parsed["question"],
-                                side=rec["side"],
-                                confidence=rec["confidence"],
-                                current_price=parsed["yes_price"],
-                                entry_price=rec["entry"],
-                                target_price=rec["target"],
-                                stop_loss=rec["stop"],
-                                rationale=rec["rationale"],
-                                market_url=parsed["url"],
-                                expires_hours=72,
-                            )
-                            print(f"    🆔 Signal #{signal_id} stored")
+                            rec = build_rec_from_signal(sig, parsed)
+                            if rec:
+                                signal_id = insert_signal(
+                                    signal_type=rec["type"],
+                                    market_slug=slug,
+                                    question=parsed["question"],
+                                    side=rec["side"],
+                                    confidence=rec["confidence"],
+                                    current_price=parsed["yes_price"],
+                                    entry_price=rec["entry"],
+                                    target_price=rec["target"],
+                                    stop_loss=rec["stop"],
+                                    rationale=rec["rationale"],
+                                    market_url=parsed["url"],
+                                    expires_hours=72,
+                                )
+                                print(f"    🆔 Signal #{signal_id} stored")
                         except Exception as e:
                             print(f"    ⚠️ DB error: {e}")
                 else:
-                    print(f"    ✅ INSIGHT ONLY (no recommendation — market doesn't warrant extra)")
+                    print(f"    ✅ INSIGHT ONLY (no recommendation warranted)")
             else:
                 print(f"    ❌ Failed")
 
-        print(f"\n✅ Done: {generated} articles ({recs_published} with recommendations)")
+        print(f"\n✅ Done: {generated} articles ({recs_published} with signal-backed recommendations)")
+
+
+def refresh_signals_dashboard():
+    """Refresh lightweight signals dashboard HTML without calling MiniMax."""
+    if not DB_OK:
+        return
+    try:
+        init_db()
+        # Placeholder — dashboard is served by server.py via /api
+        print("  Dashboard served by server.py — no refresh needed")
+    except Exception as e:
+        print(f"  ⚠️ Dashboard error: {e}")
 
 
 if __name__ == "__main__":
