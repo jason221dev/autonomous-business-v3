@@ -82,7 +82,7 @@ ROLE_MODELS = {
     "data-scientist":  {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
     "designer":        {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
     "gepa-judge":      {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
-    "security":        {"provider": "nvidia_nim", "model": "mistralai/devstral-2-123b-instruct-2512", "key": "NIM_KEY_4"},
+    "security":        {"provider": "nvidia_nim", "model": "mistralai/devstral-2-123b", "key": "NIM_KEY_4"},
 }
 
 # ── Role Schedules (cron format) ────────────────────────────────────
@@ -295,7 +295,7 @@ def run_minimax_task(role: str, model: str, api_url: str, api_key: str, prompt: 
         return {"status": "failed", "error": str(e)}
 
 
-def run_nim_task(role: str, model: str, api_url: str, api_key: str, prompt: str, timeout: int, log_file) -> dict:
+def run_nim_task(role: str, model: str, api_url: str, api_key: str, prompt: str, timeout: int, log_file, max_tokens: int = 8000) -> dict:
     """Call NVIDIA NIM API."""
     import urllib.request
     import urllib.error
@@ -309,8 +309,8 @@ def run_nim_task(role: str, model: str, api_url: str, api_key: str, prompt: str,
     MAX_CONTEXT = {
         "nvidia/nemotron-mini-4b-instruct": 3000,
         "mistralai/mistral-nemotron": 3000,
-        "mistralai/mistral-7b-instruct-v0.3": 3000,
-        "mistralai/ministral-14b-instruct-2512": 3000,
+        "mistralai/devstral-2-123b": 5000,
+        "moonshotai/kimi-k2.5": 8000,
     }
     cap = MAX_CONTEXT.get(model, 8000)
     effective_max = min(max_tokens, cap)
