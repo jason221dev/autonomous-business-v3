@@ -30,13 +30,14 @@ LOG_FILE  = LOG_DIR / "catalyst_calendar.log"
 # Days before event to start signaling
 CATALYST_ADVANCE_DAYS = {
     "fomc":        14,
-    "election":    14,
+    "election":    60,
     "gdp":          7,
     "cpi":          7,
     "nfp":          5,
     "earnings":     7,
     "court":       14,
-    "geopolitic":   7,
+    "geopolitic":  21,
+    "crypto":      21,
     "sports_final":  3,
 }
 
@@ -147,12 +148,21 @@ KNOWN_EVENTS = {
     },
     # Geopolitical events — PM underprices ceasefire/resolution
     "geopolitic": {
-        "pattern":  ["ceasefire", "peace deal", "russia ukraine", "israel palestine", "taiwan"],
+        "pattern":  ["iran","israel","war","conflict","military","attack","strike","ceasefire","peace deal","nuclear","russia ukraine","israel palestine","taiwan"],
         "lookback": 14,
         "historical_baseline": 0.30,
         "pm_bias":  "underprices_resolution",
         "action":   "buy_yes_on_ceasefire",
         "label":    "Geopolitical Development",
+    },
+    # Crypto — high vol events
+    "crypto": {
+        "pattern":  ["bitcoin","btc","crypto","ethereum","eth/usd","coinbase"],
+        "lookback": 7,
+        "historical_baseline": 0.50,
+        "pm_bias":  "high_vol",
+        "action":   "momentum",
+        "label":    "Crypto Catalyst",
     },
     # Earnings — implied move wider than actual
     "earnings": {
@@ -178,6 +188,8 @@ def categorize_market(question: str) -> str:
         return "gdp"
     if any(k in q for k in KNOWN_EVENTS["geopolitic"]["pattern"]):
         return "geopolitic"
+    if any(k in q for k in KNOWN_EVENTS["crypto"]["pattern"]):
+        return "crypto"
     if any(k in q for k in KNOWN_EVENTS["earnings"]["pattern"]):
         return "earnings"
     return "unknown"
@@ -211,11 +223,13 @@ def detect_catalyst(market: dict) -> dict | None:
         return None
 
     end_date, days_until = parse_event_date(market)
-    if days_until < 0:
-        return None
 
     cat = categorize_market(question)
     if cat == "unknown":
+        return None
+
+    # For geopolitics/crypto: allow past events (ongoing conflict resolution can happen any time)
+    if days_until < 0 and cat not in ("geopolitic", "crypto"):
         return None
 
     config = KNOWN_EVENTS.get(cat)
@@ -242,7 +256,8 @@ def detect_catalyst(market: dict) -> dict | None:
                 f"Market pricing {no:.0%} for 'no cut' — historically overstated. "
                 f"Fed has cut in ~55% of meetings. YES at {yes:.0%} offers value."
             )
-            return _build_signal(slug, question, "fomc", f"FOMC Meeting", end_date.strftime("%Y-%m-%d") if end_date else "TBD",
+            return _build_signal(slug, question, "fomc", f"FOMC Meeting",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
                                  days_until, direction, confidence, entry, target, stop, rationale)
 
         # Also: if market is pricing very high cut probability (>80%), it may be too priced in
@@ -257,7 +272,8 @@ def detect_catalyst(market: dict) -> dict | None:
                 f"YES at {yes:.0%} appears overbought. "
                 f"FOMC easing cycle may face delays — historical cut rate doesn't fully support {yes:.0%}."
             )
-            return _build_signal(slug, question, "fomc", "FOMC Meeting", end_date.strftime("%Y-%m-%d") if end_date else "TBD",
+            return _build_signal(slug, question, "fomc", "FOMC Meeting",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
                                  days_until, direction, confidence, entry, target, stop, rationale)
 
     # ── Election ───────────────────────────────────────────────────────────
@@ -297,7 +313,7 @@ def detect_catalyst(market: dict) -> dict | None:
             return None
 
         return _build_signal(slug, question, "election", "Presidential Election",
-                             end_date.strftime("%Y-%m-%d") if end_date else "TBD",
+                             end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
                              days_until, direction, confidence, entry, target, stop, rationale)
 
     # ── CPI ─────────────────────────────────────────────────────────────────
@@ -316,13 +332,13 @@ def detect_catalyst(market: dict) -> dict | None:
                 f"Value on NO side."
             )
             return _build_signal(slug, question, "cpi", "CPI Release",
-                                 end_date.strftime("%Y-%m-%d") if end_date else "TBD",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
                                  days_until, direction, confidence, entry, target, stop, rationale)
 
     # ── Geopolitics ─────────────────────────────────────────────────────────
     if cat == "geopolitic":
-        # PM systematically underprices peace/ceasefire outcomes
-        if yes < 0.45 and days_until <= 14:
+        if yes < 0.45 and days_until <= 21:
+            # PM underpricing resolution — BUY YES
             direction = "YES"
             entry = yes + 0.01
             target = min(yes + 0.20, 0.85)
@@ -336,7 +352,44 @@ def detect_catalyst(market: dict) -> dict | None:
             )
             return _build_signal(slug, question, "geopolitic",
                                  "Geopolitical Development",
-                                 end_date.strftime("%Y-%m-%d") if end_date else "TBD",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
+                                 days_until, direction, confidence, entry, target, stop, rationale)
+        elif yes > 0.80 and days_until >= -7:
+            # PM overpricing conflict persistence — fading the consensus
+            direction = "NO"
+            entry = no + 0.01
+            target = max(no - 0.10, 0.10)
+            stop   = min(no + 0.08, 0.25)
+            confidence = 0.62
+            rationale = (
+                f"Geopolitical catalyst: Market at {yes:.0%} on conflict ending. "
+                f"Diplomatic channels active, recent ceasefire talks suggest momentum. "
+                f"Fading expensive YES — risk/reward favors NO at {no:.0%}."
+            )
+            return _build_signal(slug, question, "geopolitic",
+                                 "Geopolitical Development",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
+                                 days_until, direction, confidence, entry, target, stop, rationale)
+
+    # ── Crypto ────────────────────────────────────────────────────────────────
+    if cat == "crypto":
+        if 0.30 <= yes <= 0.70:
+            # Mid-range crypto market — momentum can push either direction
+            direction = "YES" if yes < 0.50 else "NO"
+            entry  = yes + 0.01 if direction == "YES" else no + 0.01
+            target = round(min(yes * 1.30, 0.92), 2) if direction == "YES" \
+                     else round(max(no * 0.70, 0.08), 2)
+            stop   = round(max(yes * 0.70, 0.20), 2) if direction == "YES" \
+                     else round(min(no * 1.30, 0.80), 2)
+            confidence = 0.63
+            rationale = (
+                f"Crypto catalyst: Bitcoin price market at {yes:.0%}. "
+                f"High-volume crypto markets often overshoot on news. "
+                f"Momentum-driven resolution likely before event date."
+            )
+            return _build_signal(slug, question, "crypto",
+                                 "Crypto Catalyst",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
                                  days_until, direction, confidence, entry, target, stop, rationale)
 
     # ── Earnings ─────────────────────────────────────────────────────────────
@@ -355,7 +408,7 @@ def detect_catalyst(market: dict) -> dict | None:
                 f"Playing mean reversion from {yes:.0%}."
             )
             return _build_signal(slug, question, "earnings", "Earnings Release",
-                                 end_date.strftime("%Y-%m-%d") if end_date else "TBD",
+                                 end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date) if end_date else "TBD",
                                  days_until, direction, confidence, entry, target, stop, rationale)
 
     return None
@@ -428,7 +481,7 @@ def run():
                 stop_loss=result["stop"],
                 rationale=result["rationale"],
             )
-            log(f"  ⏰ CATALYST [{signal_id}]: {result['catalyst_type'].upper()} | {mkt['question'][:50]} | "
+            log(f"  ⏰ CATALYST [{signal_id}]: {result['catalyst_type'].upper()} | {question[:50]} | "
                 f"Event: {result['event_name']} ({result['days_until']}d) | {result['direction']} | conf={result['confidence']:.0%}")
             signals_generated += 1
 
