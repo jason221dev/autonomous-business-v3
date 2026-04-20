@@ -377,41 +377,23 @@ def _build_signal(slug, question, catalyst_type, event_name, event_date,
     }
 
 
-# ── Market Fetching ────────────────────────────────────────────────────────────
-def get_active_markets(limit: int = 30) -> list:
+# ── Market Fetching (via pmxt helper) ─────────────────────────────────────────
+PMXT_MARKETS = "/usr/bin/python3 /tmp/pmxt_markets.py"
+
+
+def get_active_markets(limit: int = 50) -> list:
+    """Fetch Polymarket markets via /tmp/pmxt_markets.py helper."""
     try:
-        resp = requests.get(f"{GAMMA_API}/markets", params={"limit": limit, "closed": "false"}, timeout=15)
-        data = resp.json()
-        markets = data if isinstance(data, list) else data.get("data", [])
-        result = []
-        for m in markets:
-            slug = m.get("slug", "")
-            if any(s in slug.lower() for s in SKIP_SLUGS):
-                continue
-            vol = float(m.get("volume", 0) or 0)
-            if vol < 5000:
-                continue
-            raw_prices = m.get("outcomePrices", [])
-            if isinstance(raw_prices, str):
-                try:
-                    raw_prices = json.loads(raw_prices)
-                except:
-                    raw_prices = []
-            if not isinstance(raw_prices, list) or len(raw_prices) < 2:
-                continue
-            yes = float(raw_prices[0])
-            result.append({
-                "slug":      slug,
-                "question":  m.get("question", ""),
-                "yes":       yes,
-                "no":        float(raw_prices[1]) if len(raw_prices) > 1 else 1.0 - yes,
-                "volume":    vol,
-                "end_date":  m.get("endDate", ""),
-                "url":       f"https://polymarket.com/market/{slug}",
-            })
-        return result
+        r = __import__("subprocess").run(
+            f"{PMXT_MARKETS} {limit}", shell=True,
+            capture_output=True, text=True, timeout=25,
+        )
+        if r.returncode != 0:
+            log(f"  pmxt markets error: {r.stderr.strip()[:100]}")
+            return []
+        return json.loads(r.stdout.strip())
     except Exception as e:
-        log(f"  Failed to fetch markets: {e}")
+        log(f"  pmxt markets exception: {e}")
         return []
 
 
@@ -424,11 +406,17 @@ def run():
 
     signals_generated = 0
     for mkt in markets:
-        result = detect_catalyst(mkt)
+        question = mkt.get("question") or mkt.get("title", "")
+        slug     = mkt.get("slug", "")
+        # Also normalize: pmxt returns 'title', old code expected 'question'
+        mkt_norm = dict(mkt)  # shallow copy
+        mkt_norm["question"] = mkt_norm.get("question") or mkt_norm.get("title", "")
+        mkt_norm["slug"]     = mkt_norm.get("slug", "")
+        result = detect_catalyst(mkt_norm)
         if result:
             signal_id = insert_catalyst_signal(
-                market_slug=mkt["slug"],
-                question=mkt["question"],
+                market_slug=slug,
+                question=question,
                 catalyst_type=result["catalyst_type"],
                 event_name=result["event_name"],
                 event_date=result["event_date"],

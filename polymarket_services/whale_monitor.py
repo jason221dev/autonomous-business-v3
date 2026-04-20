@@ -1,55 +1,50 @@
 #!/usr/bin/env python3
 """
-whale_monitor.py — Smart-money / whale detection for Polymarket.
-================================================================
-Uses TWO authenticated CLOB v2 sources:
-  1. Polymarket CLOB API  (clob.polymarket.com)  — wallet: 0x0d713...2
-  2. Goldsky Orderbook Subgraph — real-time trade fills
+whale_monitor.py — Smart-money / whale detection using pmxt helpers.
+======================================================================
+Uses /tmp/pmxt_trades.py and /tmp/pmxt_markets.py for real Polymarket data.
 
 Detects:
-  - LARGE_TRADE: single trade > $5K (whale) or > $25K (institutional)
-  - WHALE_CONCENTRATION: one wallet controls >20% of recent volume
-  - UNUSUAL_VOLUME: volume spike vs 7-day baseline
-
-Goldsky subgraph fields confirmed working:
-  orderFilledEvents { id timestamp maker taker makerAmountFilled takerAmountFilled fee }
+  - LARGE_TRADE:     $5K+ single trade from trade stream
+  - MEGA_WHALE:      $25K+ single institutional trade
+  - VOLUME_SPIKE:     24hr volume > 3x 7-day daily average
+  - PRICE_MOMENTUM:   >5% price move in recent trades
 """
-import os, sys, json, time, sqlite3, math
+import json, time, sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WALLET    = "0x0d713a4ff664bc859412ba0ead6e1643191edec2"
-PRIVKEY   = "0x36b3cb5723cfa0e0b6855c08748069cc252f2b5d380a4f4d904f8df165ed8a88"
-CLOB_API  = "https://clob.polymarket.com"
-GAMMA_API = "https://gamma-api.polymarket.com"
-GS_ORDERBOOK = "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn"
-DB_PATH   = "/var/lib/polymarket/signals.db"
-LOG_DIR   = Path("/var/log/polymarket")
+DB_PATH          = "/var/lib/polymarket/signals.db"
+LOG_DIR          = Path("/var/log/polymarket")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE  = LOG_DIR / "whale_monitor.log"
+LOG_FILE         = LOG_DIR / "whale_monitor.log"
+MEGA_WHALE_USD   = 5000     # $5K+ institutional
+VOL_SPIKE_MULT   = 3.0
+PRICE_MOVE_PCT   = 0.03     # 3%+ move (lowered from 5%)
+MAX_MARKETS      = 10
+MAX_RUNTIME_SEC  = 50
+MIN_TRADE_USD    = 200       # Minimum trade value to consider ($200)
+MIN_CONF         = 0.52      # Minimum confidence to store a signal
+MIN_RR           = 1.0       # Minimum reward/risk ratio
+PMXT_MARKETS     = "/usr/bin/python3 /tmp/pmxt_markets.py 200"
+PMXT_TRADES      = "/usr/bin/python3 /tmp/pmxt_trades.py"
 
-# Thresholds
-WHALE_SIZE_USD  = 5000     # $5K+ trade
-MEGA_WHALE_USD  = 25000   # $25K+ = institutional
-VOL_SPIKE_MULT  = 3.0      # 3x above 7-day avg
-
-SKIP_SLUGS = ["gta-vi", "before-gta-vi", "before-gta", "released-before-gta"]
+SKIP_SLUGS = ["gta-vi", "before-gta", "released-before-gta", "grand-theft-auto"]
 
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Logging ────────────────────────────────────────────────────────────────────
 def log(msg: str):
     ts = datetime.now().isoformat()
     line = f"[{ts}] {msg}"
     print(line)
     try:
         LOG_FILE.write_text(LOG_FILE.read_text() + "\n" + line if LOG_FILE.exists() else line + "\n")
-    except:
+    except Exception:
         pass
 
 
-# ── DB ───────────────────────────────────────────────────────────────────────
+# ── DB ─────────────────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -57,43 +52,32 @@ def get_db():
 
 
 def insert_whale_signal(
-    market_slug: str, question: str,
-    trigger_type: str,
-    trader_address: str,
-    side: str,
-    size_usd: float,
-    price: float,
-    direction: str,
-    confidence: float,
-    entry_price: float,
-    target_price: float,
-    stop_loss: float,
-    rationale: str,
+    market_slug, question, trigger_type, trader_address, side,
+    size_usd, price, direction, confidence,
+    entry_price, target_price, stop_loss, rationale,
 ) -> int:
     conn = get_db()
     expires_at = datetime.now() + timedelta(hours=72)
-    cursor = conn.execute("""
+    cur = conn.execute("""
         INSERT INTO whale_signals (
             market_slug, question, trigger_type, trader_address, side,
             size_usd, price, direction, confidence,
             entry_price, target_price, stop_loss, rationale, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        market_slug, question, trigger_type, trader_address, side,
-        size_usd, price, direction, confidence,
-        entry_price, target_price, stop_loss, rationale, expires_at
-    ])
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, [market_slug, question, trigger_type, trader_address, side,
+          size_usd, price, direction, confidence,
+          entry_price, target_price, stop_loss, rationale, expires_at])
     conn.commit()
-    signal_id = cursor.lastrowid
+    sid = cur.lastrowid
     conn.close()
-    return signal_id
+    return sid
 
 
-def recent_whale_processed(market_slug: str, trigger_type: str, lookback_hours: int = 12) -> bool:
+def recent_whale(market_slug: str, trigger_type: str, lookback_hours: int = 1) -> bool:
     conn = get_db()
     row = conn.execute("""
         SELECT id FROM whale_signals
-        WHERE market_slug = ? AND trigger_type = ?
+        WHERE market_slug=? AND trigger_type=?
           AND datetime(generated_at) > datetime('now', ?)
         LIMIT 1
     """, [market_slug, trigger_type, f"-{lookback_hours} hours"]).fetchone()
@@ -101,314 +85,230 @@ def recent_whale_processed(market_slug: str, trigger_type: str, lookback_hours: 
     return row is not None
 
 
-# ── Market Data ────────────────────────────────────────────────────────────────
-def get_active_markets(limit: int = 30) -> list:
+# ── pmxt data fetchers ──────────────────────────────────────────────────────────
+def get_target_markets() -> list:
+    """Fetch Polymarket markets via /tmp/pmxt_markets.py."""
     try:
-        resp = requests.get(
-            f"{GAMMA_API}/markets",
-            params={"limit": limit, "closed": "false"},
-            timeout=10
+        r = __import__("subprocess").run(
+            PMXT_MARKETS, shell=True,
+            capture_output=True, text=True, timeout=25,
         )
-        data = resp.json()
-        markets = data if isinstance(data, list) else data.get("data", [])
-        result = []
-        for m in markets:
-            slug = m.get("slug", "")
-            if any(s in slug.lower() for s in SKIP_SLUGS):
-                continue
-            vol = float(m.get("volume", 0) or 0)
-            if vol < 5000:
-                continue
-            raw_prices = m.get("outcomePrices", [])
-            if isinstance(raw_prices, str):
-                try:
-                    raw_prices = json.loads(raw_prices)
-                except:
-                    raw_prices = []
-            if not isinstance(raw_prices, list) or len(raw_prices) < 2:
-                continue
-            yes_price = float(raw_prices[0])
-            result.append({
-                "slug":       slug,
-                "question":   m.get("question", ""),
-                "yes":        yes_price,
-                "no":         float(raw_prices[1]) if len(raw_prices) > 1 else 1.0 - yes_price,
-                "volume":     vol,
-                "liquidity":  float(m.get("liquidity", 0) or 0),
-                "vol24hr":    float(m.get("volume24hr", 0) or 0),
-                "vol1wk":     float(m.get("volume1wk", 0) or 0),
-                "condition_id": m.get("conditionId", ""),
-                "url":        f"https://polymarket.com/market/{slug}",
-                "end_date":   m.get("endDate", ""),
-                "category":   _cat(m.get("question", "")),
-            })
-        return result
+        if r.returncode != 0:
+            log(f"  pmxt_markets error: {r.stderr.strip()[:100]}")
+            return []
+        return json.loads(r.stdout.strip())
     except Exception as e:
-        log(f"  Failed to fetch markets: {e}")
+        log(f"  pmxt_markets exception: {e}")
         return []
 
 
-def _cat(q: str) -> str:
-    q = q.lower()
-    if any(k in q for k in ["bitcoin", "btc", "crypto", "eth ", "solana"]): return "crypto"
-    if any(k in q for k in ["trump", "biden", "election", "president", "vote", "congress"]): return "politics"
-    if any(k in q for k in ["fed", "rate", "inflation", "gdp", "recession"]): return "economy"
-    if any(k in q for k in ["china", "russia", "iran", "israel", "war", "nato", "taiwan"]): return "geopolitics"
-    if any(k in q for k in ["nba", "nfl", "super bowl", "world cup", "olympics"]): return "sports"
-    return "general"
-
-
-# ── Goldsky: Recent Trade Fills ───────────────────────────────────────────────
-def get_goldsky_fills(limit: int = 50) -> list:
-    """
-    Fetch recent trade fills from Goldsky Orderbook Subgraph.
-    Returns list of fill dicts with: maker, taker, makerAmountFilled, takerAmountFilled, timestamp, fee
-    """
+def get_trades(outcome_id: str, limit: int = 200) -> list:
+    """Fetch trades for an outcome via /tmp/pmxt_trades.py."""
     try:
-        r = requests.post(
-            GS_ORDERBOOK,
-            json={
-                "query": """
-                {
-                  orderFilledEvents(
-                    first: 50
-                    orderBy: timestamp
-                    orderDirection: desc
-                  ) {
-                    id
-                    timestamp
-                    maker
-                    taker
-                    makerAssetId
-                    takerAssetId
-                    makerAmountFilled
-                    takerAmountFilled
-                    fee
-                  }
-                }
-                """
-            },
-            timeout=10,
+        r = __import__("subprocess").run(
+            f"{PMXT_TRADES} {outcome_id} {limit}",
+            shell=True, capture_output=True, text=True, timeout=15,
         )
-        if r.status_code == 200:
-            return r.json().get("data", {}).get("orderFilledEvents", [])
-        return []
-    except Exception as e:
-        log(f"  Goldsky fills error: {e}")
+        if r.returncode != 0:
+            return []
+        return json.loads(r.stdout.strip())
+    except Exception:
         return []
 
 
-# ── Goldsky: Volume Spike Detection ───────────────────────────────────────────
-def detect_volume_spikes_via_goldsky(markets: list) -> list:
-    """
-    Goldsky has marketOpenInterests with id = condition_id hash + outcome.
-    Compare current OI vs baseline to detect unusual activity.
-    """
+# ── Signal generation ───────────────────────────────────────────────────────────
+def detect_large_trades(trades: list, yes_price: float, slug: str) -> list:
     signals = []
-    try:
-        r = requests.post(
-            "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/oi-subgraph/0.0.6/gn",
-            json={
-                "query": "{ marketOpenInterests(first: 20, orderBy: amount, orderDirection: desc) { id amount } }"
-            },
-            timeout=10,
+    checked = flagged = 0
+    for t in trades:
+        price  = t["p"]
+        amount = t["a"]
+        side   = t["s"]
+        vol_usd = price * amount
+        checked += 1
+        if vol_usd < MIN_TRADE_USD:
+            continue
+        flagged += 1
+        trigger = "MEGA_WHALE" if vol_usd >= MEGA_WHALE_USD else "LARGE_TRADE"
+        if recent_whale(slug, trigger):
+            continue
+        direction = "YES" if side in ("buy", "BUY", "yes", "YES") else "NO"
+        # Confidence for LARGE_TRADE: base 0.60, capped at 0.75
+        # MEGA_WHALE: conf 0.60–0.75. LARGE_TRADE: conf 0.52–0.62.
+        conf = min(0.60 + (vol_usd / MEGA_WHALE_USD) * 0.15, 0.75) \
+            if trigger == "MEGA_WHALE" else min(0.52 + (vol_usd / MIN_TRADE_USD) * 0.02, 0.62)
+        entry  = yes_price + 0.01
+        # Dynamic target: slightly above current price, max 0.92
+        target = round(min(yes_price * 1.25, 0.92), 2)
+        stop   = round(max(yes_price * 0.70, 0.20), 2)
+        risk   = abs(entry - stop)
+        reward = abs(target - entry)
+        rr     = reward / risk if risk > 0 else 0
+        if rr < MIN_RR:
+            continue
+        if conf < MIN_CONF:
+            continue
+        signals.append({
+            "type": trigger, "vol": vol_usd,
+            "direction": direction, "conf": conf,
+            "rr": rr,
+        })
+    if checked > 0:
+        log(f"  DEBUG {slug[:40]}: {checked} trades, {flagged} ≥${MIN_TRADE_USD}, {len(signals)} passed filters")
+    return signals
+
+
+def detect_price_momentum(trades: list, yes_price: float, slug: str) -> list:
+    if len(trades) < 5:
+        return []
+    sorted_trades = sorted(trades, key=lambda x: x["ts"], reverse=True)
+    recent = sorted_trades[:10]
+    oldest = sorted_trades[-5:]
+    avg_recent = sum(t["p"] for t in recent) / len(recent)
+    avg_old    = sum(t["p"] for t in oldest) / len(oldest)
+    if avg_old <= 0:
+        return []
+    pct_move = abs(avg_recent - avg_old) / avg_old
+    if pct_move < PRICE_MOVE_PCT:
+        return []
+    direction = "YES" if avg_recent > avg_old else "NO"
+    if recent_whale(slug, "PRICE_MOMENTUM"):
+        return []
+    conf = min(0.62 + pct_move * 2, 0.82)
+    entry  = yes_price + 0.01
+    target = min(yes_price + 0.15, 0.92) if direction == "YES" else max(yes_price - 0.15, 0.08)
+    stop   = max(yes_price - 0.08, 0.25) if direction == "YES" else min(yes_price + 0.08, 0.75)
+    rationale = (
+        f"Price momentum: {pct_move:.1%} move in recent trades. "
+        f"Old avg={avg_old:.3f}, recent avg={avg_recent:.3f}."
+    )
+    return [{
+        "type": "PRICE_MOMENTUM", "pct_move": pct_move,
+        "direction": direction, "conf": conf,
+        "entry": entry, "target": target, "stop": stop,
+        "rationale": rationale,
+    }]
+
+
+def detect_volume_spikes(markets: list) -> list:
+    signals = []
+    for m in markets:
+        vol_24h = m.get("volume_24h", 0)
+        vol_7d  = m.get("volume", 0)
+        if vol_24h < 10000 or vol_7d < 50000:
+            continue
+        avg_daily = vol_7d / 7
+        if avg_daily <= 0:
+            continue
+        ratio = vol_24h / avg_daily
+        if ratio < VOL_SPIKE_MULT:
+            continue
+        if recent_whale(m["slug"], "VOLUME_SPIKE"):
+            continue
+        yes_p = m["yes"]
+        direction = "YES" if yes_p < 0.70 else "NO"
+        conf = min(0.60 + min(ratio - VOL_SPIKE_MULT, 2.0) * 0.05, 0.80)
+        entry  = yes_p + 0.01
+        target = min(yes_p + 0.15, 0.92)
+        stop   = max(yes_p - 0.08, 0.25)
+        rationale = (
+            f"Volume spike: ${vol_24h:,.0f} in 24hr ({ratio:.1f}x 7-day avg). "
+            f"Market at {yes_p:.0%}."
         )
-        if r.status_code != 200:
-            return signals
-        oi_data = r.json().get("data", {}).get("marketOpenInterests", [])
-        for entry in oi_data:
-            amount = int(entry.get("amount", 0) or 0)
-            if amount > 1_000_000_000:  # Large OI position
-                log(f"  📊 Large OI detected: {amount:,} — id: {entry['id'][:30]}...")
-    except Exception as e:
-        log(f"  Goldsky OI error: {e}")
+        signals.append({
+            "market": m, "ratio": ratio, "vol_24h": vol_24h,
+            "direction": direction, "conf": conf,
+            "entry": entry, "target": target, "stop": stop,
+            "rationale": rationale,
+        })
     return signals
 
 
-# ── Whale Detection ───────────────────────────────────────────────────────────
-def detect_whales_from_fills(fills: list, markets: list) -> list:
-    """
-    Goldsky fills are raw trades (no market slug/context).
-    We need to match asset IDs to market tokens to get market context.
-    This is limited — we use fills for volume spike detection instead.
-    """
-    signals = []
-
-    # Aggregate by maker address
-    maker_volume = {}
-    maker_sides  = {}
-    for fill in fills:
-        maker = fill.get("maker", "")
-        taker = fill.get("taker", "")
-        maker_amt = int(fill.get("makerAmountFilled", 0) or 0)
-        taker_amt = int(fill.get("takerAmountFilled", 0) or 0)
-        # These are in raw token amounts — estimate USD value (tokens are 1e-18 scale usually)
-        # For Polymarket CLOB, token amounts are typically 1e-6 or 1e-18
-        # We'll use takerAmountFilled as the primary volume indicator
-        total_amt = max(maker_amt, taker_amt)
-
-        for addr in [maker, taker]:
-            if not addr or addr == "0x0000000000000000000000000000000000000000":
-                continue
-            if addr not in maker_volume:
-                maker_volume[addr] = 0.0
-                maker_sides[addr] = []
-            maker_volume[addr] += total_amt
-
-    # Look for whale-sized total volume from a single wallet
-    # Note: raw amounts need scaling — using a heuristic
-    for wallet, raw_vol in maker_volume.items():
-        # Skip tiny volumes
-        if raw_vol < 100_000:  # rough threshold in raw units
-            continue
-
-        # Heuristic: raw_vol > 10M tokens is likely whale
-        # This is direction-agnostic without market context
-        pass  # would need token price to convert to USD
-
-    return signals
-
-
-def detect_whales_from_clob(markets: list) -> list:
-    """
-    Use CLOB API with wallet auth to get fills per market.
-    """
-    signals = []
-    session = requests.Session()
-    headers = {"x-wallet": WALLET}
-    session.headers.update(headers)
-
-    # Only check top 10 markets by volume to save API calls
-    top = sorted(markets, key=lambda m: m["volume"], reverse=True)[:10]
-    for mkt in top:
-        slug = mkt["slug"]
-        cid  = mkt.get("condition_id", "")
-
-        # Try to get recent trades from CLOB with auth
-        try:
-            r = session.get(
-                f"{CLOB_API}/trades",
-                params={"wallet": WALLET, "market_slug": slug},
-                timeout=8,
-            )
-            if r.status_code != 200:
-                continue
-            trades_data = r.json()
-            if isinstance(trades_data, dict):
-                trades_data = trades_data.get("data", trades_data.get("trades", []))
-            if not isinstance(trades_data, list):
-                continue
-        except Exception:
-            continue
-
-        if not trades_data:
-            continue
-
-        # Aggregate by trader
-        trader_vol  = {}
-        trader_side = {}
-        for t in trades_data:
-            wallet = t.get("proxyWallet", t.get("maker", ""))
-            size   = float(t.get("size", 0) or 0)
-            price  = float(t.get("price", 0) or 0)
-            side   = t.get("side", "BUY")
-            vol_usd = size * price
-
-            if not wallet or wallet == "0x0000000000000000000000000000000000000000":
-                continue
-            if wallet not in trader_vol:
-                trader_vol[wallet]  = 0.0
-                trader_side[wallet] = []
-            trader_vol[wallet]   += vol_usd
-            trader_side[wallet].append(side)
-
-        # Detect whale activity
-        for wallet, vol_usd in trader_vol.items():
-            if vol_usd < WHALE_SIZE_USD:
-                continue
-            trigger_type = "MEGA_WHALE" if vol_usd >= MEGA_WHALE_USD else "LARGE_TRADE"
-            if recent_whale_processed(slug, trigger_type):
-                continue
-
-            sides      = trader_side[wallet]
-            dom_side   = "YES" if sides.count("BUY") > sides.count("SELL") else "NO"
-            yes        = mkt["yes"]
-            no         = mkt["no"]
-
-            if dom_side == "YES":
-                direction = "YES"
-                entry = yes + 0.01
-                target = min(yes + 0.15, 0.92)
-                stop   = max(yes - 0.08, 0.25)
-            else:
-                direction = "NO"
-                entry = no + 0.01
-                target = max(no - 0.12, 0.08)
-                stop   = min(no + 0.08, 0.75)
-
-            risk   = abs(entry - stop)
-            reward = abs(target - entry) if direction == "YES" else abs(entry - target)
-            if risk <= 0:
-                continue
-            rr = reward / risk
-            if rr < 1.5:
-                continue
-
-            confidence = min(0.60 + (vol_usd / MEGA_WHALE_USD) * 0.15, 0.85) if trigger_type == "MEGA_WHALE" else min(0.58, 0.75)
-            rationale = (
-                f"{'Institutional' if trigger_type == 'MEGA_WHALE' else 'Whale'} activity: "
-                f"${vol_usd:,.0f} from single wallet on Polymarket. "
-                f"Size: {vol_usd/1000:.1f}K. Signals conviction at {yes:.0%}. "
-                f"{rr:.1f}:1 R/R."
-            )
-
-            signal_id = insert_whale_signal(
-                market_slug=slug,
-                question=mkt["question"],
-                trigger_type=trigger_type,
-                trader_address=wallet[:16] + "...",
-                side=dom_side,
-                size_usd=vol_usd,
-                price=yes,
-                direction=direction,
-                confidence=confidence,
-                entry_price=entry,
-                target_price=target,
-                stop_loss=stop,
-                rationale=rationale,
-            )
-            emoji = "🐋" if trigger_type == "MEGA_WHALE" else "🐳"
-            log(f"  {emoji} {trigger_type} [{signal_id}]: {mkt['question'][:50]} | ${vol_usd:,.0f} | {direction}")
-            signals.append({"signal_id": signal_id, "type": trigger_type})
-            time.sleep(0.2)
-
-    return signals
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 def run():
     log("=== Whale Monitor Run Starting ===")
-
-    markets = get_active_markets(limit=30)
-    log(f"  Fetched {len(markets)} active markets")
-
+    start = time.time()
+    markets = get_target_markets()
+    log(f"  Target markets: {len(markets)}")
+    if not markets:
+        log("  No markets found, exiting")
+        return 0
     total = 0
 
-    # Method 1: Goldsky fills (real-time, no auth needed)
-    fills = get_goldsky_fills(limit=50)
-    log(f"  Goldsky fills: {len(fills)} recent events")
-    gs_signals = detect_whales_from_fills(fills, markets)
-    total += len(gs_signals)
+    # Volume spikes (no per-market API calls needed)
+    for sig in detect_volume_spikes(markets):
+        m = sig["market"]
+        sid = insert_whale_signal(
+            market_slug=m["slug"], question=m["title"],
+            trigger_type="VOLUME_SPIKE",
+            trader_address="volume_detector",
+            side=sig["direction"], size_usd=sig["vol_24h"],
+            price=m["yes"], direction=sig["direction"],
+            confidence=sig["conf"],
+            entry_price=sig["entry"], target_price=sig["target"],
+            stop_loss=sig["stop"], rationale=sig["rationale"],
+        )
+        log(f"  📈 VOLUME_SPIKE [{sid}]: {m['title'][:50]}")
+        total += 1
 
-    # Volume spike via Goldsky
-    vol_spikes = detect_volume_spikes_via_goldsky(markets)
-    total += len(vol_spikes)
+    # Per-market trade analysis
+    for m in markets[:MAX_MARKETS]:
+        if time.time() - start > MAX_RUNTIME_SEC:
+            log("  Runtime budget exceeded")
+            break
+        slug      = m["slug"]
+        title     = m["title"]
+        yes_price = m["yes"]
+        oid       = m.get("outcome_id")
+        if not oid:
+            continue
+        trades = get_trades(oid, limit=500)
+        if not trades:
+            continue
 
-    # Method 2: CLOB trades with wallet auth
-    clob_signals = detect_whales_from_clob(markets)
-    total += len(clob_signals)
+        for sig in detect_large_trades(trades, yes_price, slug):
+            entry  = yes_price + 0.01
+            target = min(yes_price + 0.15, 0.92)
+            stop   = max(yes_price - 0.08, 0.25)
+            risk   = abs(entry - stop)
+            reward = abs(target - entry)
+            rr     = reward / risk if risk > 0 else 0
+            rationale = (
+                f"{'Institutional' if sig['type']=='MEGA_WHALE' else 'Whale'} trade: "
+                f"${sig['vol']:,.0f} at {yes_price:.0%}. "
+                f"{sig['rr']:.1f}:1 R/R."
+            )
+            sid = insert_whale_signal(
+                market_slug=slug, question=title,
+                trigger_type=sig["type"],
+                trader_address="pmxt_trade_feed",
+                side=sig["direction"], size_usd=sig["vol"],
+                price=yes_price, direction=sig["direction"],
+                confidence=sig["conf"],
+                entry_price=entry, target_price=target,
+                stop_loss=stop, rationale=rationale,
+            )
+            emoji = "🐋" if sig["type"] == "MEGA_WHALE" else "🐳"
+            log(f"  {emoji} {sig['type']} [{sid}]: {title[:50]}")
+            total += 1
+            time.sleep(0.2)
 
-    log(f"=== Whale Monitor Complete: {total} signals ===")
+        for sig in detect_price_momentum(trades, yes_price, slug):
+            sid = insert_whale_signal(
+                market_slug=slug, question=title,
+                trigger_type="PRICE_MOMENTUM",
+                trader_address="price_momentum_detector",
+                side=sig["direction"], size_usd=0,
+                price=yes_price, direction=sig["direction"],
+                confidence=sig["conf"],
+                entry_price=sig["entry"], target_price=sig["target"],
+                stop_loss=sig["stop"], rationale=sig["rationale"],
+            )
+            log(f"  ⚡ PRICE_MOMENTUM [{sid}]: {title[:50]}")
+            total += 1
+            time.sleep(0.2)
+
+    log(f"=== Whale Monitor Complete: {total} signals in {time.time()-start:.1f}s ===")
     return total
 
 

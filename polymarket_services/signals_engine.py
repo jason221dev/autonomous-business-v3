@@ -71,12 +71,18 @@ def run():
         results.append(result)
         time.sleep(0.5)
 
-    total = sum(r.get("signals", 0) for r in results)
+    total = sum(
+        r.get("signals", 0) if isinstance(r.get("signals"), int)
+        else r.get("stored", 0) if isinstance(r.get("stored"), int)
+        else 0
+        for r in results
+    )
     logger.info("=" * 60)
     logger.info(f"All workers complete — {total} total signals generated")
     for r in results:
         icon = "✓" if r["status"] == "ok" else "⚠" if "no_function" in r.get("status","") else "✗"
-        logger.info(f"  {icon} {r['worker']}: {r.get('signals', 0)} signals ({r['status']})")
+        n = r.get("signals", 0) if isinstance(r.get("signals"), int) else r.get("stored", 0)
+        logger.info(f"  {icon} {r['worker']}: {n} signals ({r['status']})")
 
     return {"workers": results, "total_signals": total, "timestamp": datetime.now().isoformat()}
 

@@ -2,58 +2,81 @@
 """
 news_monitor.py — NewsAPI-driven insight triggers for Polymarket.
 ====================================================================
-Scopes NewsAPI for news items relevant to Polymarket markets, then
-cross-references against active markets to detect:
-  1. NEWS_CORROBORATION  — credible news article confirms a market direction
+Scopes NewsAPI for news relevant to Polymarket markets. Detects:
+  1. NEWS_CORROBORATION  — credible news confirms a market direction
   2. NEWS_CONTRADICTION  — news contradicts current market odds
-  3. WHALE_NEWS          — large trader position opened after significant news
-  4. CATALYST_NEWS       — breaking news about an upcoming event
+  3. BREAKING_NEWS       — urgent/imminent event news moves coin-flip markets
+  4. EARNINGS_CATALYST   — earnings/results catalyst for related markets
 
 Rate limit: 1000 req/day, resets 9am PST (17:00 UTC).
-We target ~40–60 API calls/day (top-headlines x5 categories + search).
+We target ~40-60 API calls/day (top-headlines x5 + targeted search).
+Deduplication: tracks seen article URLs + per-market signal cooldowns.
+
+pmxt runs under: /usr/bin/python3 (Python 3.12) for market data.
 """
 import os, sys, json, time, sqlite3, re
 from datetime import datetime, timedelta
 from pathlib import Path
 import requests
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config ─────────────────────────────────────────────────────────────────────
 NEWS_API_KEY   = "9c9581d6f16f40bca0699996e3761165"
 NEWS_API_BASE  = "https://newsapi.org/v2"
-POLYMARKET_API = "https://gamma-api.polymarket.com"
 DB_PATH        = "/var/lib/polymarket/signals.db"
 LOG_DIR        = Path("/var/log/polymarket")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE       = LOG_DIR / "news_monitor.log"
 
-# Categories to monitor (each triggers a separate call)
-CATEGORIES = ["general", "business", "science", "world", "technology"]
-COUNTRY    = "us"   # top-headlines country
-MAX_RESULTS_PER_QUERY = 10
+# Categories for top-headlines (one call each = 5 calls/run)
+CATEGORIES       = ["general", "business", "science", "world", "technology"]
+COUNTRY          = "us"
+MAX_RESULTS_QUERY = 10
 
-# Relevance keywords per category — maps to Polymarket market categories
-CATEGORY_KEYWORDS = {
-    "politics":   ["trump", "biden", "congress", "senate", "election", "president", "democrat", "republican", "vote", "gop", "supreme court", "impeach"],
-    "economy":    ["fed", "federal reserve", "rate", "inflation", "cpi", "gdp", "recession", "treasury", "unemployment", " Jerome Powell"],
-    "geopolitics":["russia", "ukraine", "china", "taiwan", "iran", "israel", "war", "nato", "putin", "zelensky", "military", "ceasefire", "sanctions", "middle east"],
-    "crypto":      ["bitcoin", "btc", "ethereum", "eth", "crypto", "solana", "bnb", "blockchain", "sec", "etf", "halving"],
-    "sports":      ["nba", "nfl", "super bowl", "world cup", "olympics", "election"],
-    "finance":     ["earnings", "stock", "market", "s&p", "nasdaq", "dow jones", "apple", "nvidia", "meta", "google", "amazon"],
+# Targeted search queries — fired sparingly to find specific market catalysts
+# These use /everything endpoint — more expensive, use only when API budget allows
+TARGETED_SEARCHES = [
+    "Federal Reserve interest rate decision",
+    "China Taiwan military",
+    "Russia Ukraine ceasefire",
+    "Iran nuclear deal",
+    "Bitcoin ETF approval",
+    "Supreme Court ruling",
+    "NATO summit",
+    "OPEC meeting",
+]
+
+# Per-market cooldown: don't signal same market more than once per 36 hours
+MARKET_COOLDOWN_HOURS = 36
+
+# URL dedup window: don't re-process an article URL within 72 hours
+URL_DEDUP_HOURS = 72
+
+# CREDIBLE SOURCES — only these generate high-confidence signals
+CREDIBLE_SOURCES = {
+    "Reuters", "Associated Press", "AP News", "BBC", "BBC News",
+    "The Guardian", "Financial Times", "Wall Street Journal", "WSJ",
+    "Washington Post", "The New York Times", "NYT", "Politico",
+    "Bloomberg", "CNBC", "The Economist", "The Hill", "Fox News",
+    "NBC News", "ABC News", "CBS News", "CNN",
 }
 
-# Markets to skip (no edge possible — special dates, meme markets)
 SKIP_SLUGS = ["gta-vi", "before-gta-vi", "before-gta", "released-before-gta"]
 
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Logging ────────────────────────────────────────────────────────────────────
 def log(msg: str):
     ts = datetime.now().isoformat()
     line = f"[{ts}] {msg}"
     print(line)
-    LOG_FILE.write_text(LOG_FILE.read_text() + line + "\n" if LOG_FILE.exists() else line + "\n")
+    try:
+        LOG_FILE.write_text(
+            LOG_FILE.read_text() + "\n" + line if LOG_FILE.exists() else line + "\n"
+        )
+    except Exception:
+        pass
 
 
-# ── DB ────────────────────────────────────────────────────────────────────────
+# ── DB ─────────────────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -62,11 +85,11 @@ def get_db():
 
 def insert_news_signal(
     market_slug: str, question: str,
-    trigger_type: str,       # NEWS_CORROBORATION | NEWS_CONTRADICTION | CATALYST_NEWS
+    trigger_type: str,
     news_title: str,
     news_url: str,
     source: str,
-    direction: str,         # YES | NO
+    direction: str,
     confidence: float,
     entry_price: float,
     target_price: float,
@@ -92,354 +115,330 @@ def insert_news_signal(
     return signal_id
 
 
-def get_active_news_signals(limit: int = 10) -> list:
+def is_url_processed(news_url: str) -> bool:
+    """Return True if this URL was processed within URL_DEDUP_HOURS."""
     conn = get_db()
-    rows = conn.execute("""
-        SELECT * FROM news_signals
-        WHERE status = 'active'
-          AND datetime(expires_at) > datetime('now')
-        ORDER BY confidence DESC, generated_at DESC
-        LIMIT ?
-    """, [limit]).fetchall()
+    row = conn.execute("""
+        SELECT id FROM news_signals
+        WHERE news_url = ?
+          AND datetime(generated_at) > datetime('now', ?)
+        LIMIT 1
+    """, [news_url, f"-{URL_DEDUP_HOURS} hours"]).fetchone()
     conn.close()
-    return [dict(r) for r in rows]
+    return row is not None
 
 
-def mark_news_signal_processed(signal_id: int):
+def is_market_cooldown(market_slug: str) -> bool:
+    """Return True if we signaled this market within MARKET_COOLDOWN_HOURS."""
     conn = get_db()
-    conn.execute("UPDATE news_signals SET status='processed' WHERE id=?", [signal_id])
-    conn.commit()
+    row = conn.execute("""
+        SELECT id FROM news_signals
+        WHERE market_slug = ?
+          AND datetime(generated_at) > datetime('now', ?)
+        LIMIT 1
+    """, [market_slug, f"-{MARKET_COOLDOWN_HOURS} hours"]).fetchone()
     conn.close()
+    return row is not None
 
 
-# ── NewsAPI helpers ───────────────────────────────────────────────────────────
-def api_call_count_key() -> int:
-    """Return approximate daily API call count from a simple counter file."""
+# ── NewsAPI rate limit ─────────────────────────────────────────────────────────
+def api_remaining() -> int:
     counter_file = LOG_DIR / "news_api_calls.txt"
     today = datetime.now().strftime("%Y-%m-%d")
     if counter_file.exists():
         content = counter_file.read_text().strip()
         parts = content.split(":")
         if len(parts) == 2 and parts[0] == today:
-            return int(parts[1])
-    return 0
+            return max(0, 1000 - int(parts[1]))
+    return 1000
 
 
-def increment_api_counter():
+def increment_counter():
     counter_file = LOG_DIR / "news_api_calls.txt"
     today = datetime.now().strftime("%Y-%m-%d")
-    current = api_call_count_key()
+    current = 0
+    if counter_file.exists():
+        content = counter_file.read_text().strip()
+        parts = content.split(":")
+        if len(parts) == 2 and parts[0] == today:
+            current = int(parts[1])
     counter_file.write_text(f"{today}:{current + 1}")
 
 
-def newsapi_remaining() -> int:
-    """Return remaining API calls for today."""
-    return max(0, 1000 - api_call_count_key())
-
-
-def fetch_top_headlines(category: str = "general", page_size: int = 10) -> list:
-    """Fetch top headlines for a category. Respects rate limit."""
-    if newsapi_remaining() < 5:
-        log("⚠️ NewsAPI daily limit approaching, skipping headlines.")
+def fetch_headlines(category: str) -> list:
+    if api_remaining() < 5:
+        log(f"  ⚠️ Low API budget ({api_remaining()}), skipping {category}")
         return []
-
-    url = f"{NEWS_API_BASE}/top-headlines"
-    params = {
-        "apiKey":   NEWS_API_KEY,
-        "category": category,
-        "country":  COUNTRY,
-        "pageSize": page_size,
-    }
     try:
-        r = requests.get(url, params=params, timeout=15)
-        increment_api_counter()
-        if r.status_code == 200:
-            return r.json().get("articles", [])
-        elif r.status_code == 429:
-            log(f"⚠️ NewsAPI rate limited (429). Remaining: {newsapi_remaining()}")
-        else:
-            log(f"  NewsAPI top-headlines error ({category}): {r.status_code} {r.text[:100]}")
-    except Exception as e:
-        log(f"  NewsAPI exception ({category}): {e}")
-    return []
-
-
-def search_news(query: str, page_size: int = 10, sort_by: str = "publishedAt") -> list:
-    """Search news for a specific topic."""
-    if newsapi_remaining() < 10:
-        log("⚠️ NewsAPI daily limit approaching, skipping search.")
-        return []
-
-    url = f"{NEWS_API_BASE}/everything"
-    params = {
-        "apiKey":   NEWS_API_KEY,
-        "q":        query,
-        "pageSize": page_size,
-        "sortBy":   sort_by,
-        "language": "en",
-    }
-    try:
-        r = requests.get(url, params=params, timeout=15)
-        increment_api_counter()
-        if r.status_code == 200:
-            return r.json().get("articles", [])
-        elif r.status_code == 429:
-            log(f"⚠️ NewsAPI rate limited (429). Remaining: {newsapi_remaining()}")
-        else:
-            log(f"  NewsAPI search error ({query[:40]}): {r.status_code}")
-    except Exception as e:
-        log(f"  NewsAPI search exception: {e}")
-    return []
-
-
-# ── Market matching ───────────────────────────────────────────────────────────
-def get_active_markets(limit: int = 50) -> list:
-    """Fetch active Polymarket markets with meaningful volume."""
-    try:
-        resp = requests.get(
-            f"{POLYMARKET_API}/markets",
-            params={"limit": limit, "closed": "false"},
+        r = requests.get(
+            f"{NEWS_API_BASE}/top-headlines",
+            params={"apiKey": NEWS_API_KEY, "category": category,
+                    "country": COUNTRY, "pageSize": MAX_RESULTS_QUERY},
             timeout=15
         )
-        data = resp.json()
-        markets = data if isinstance(data, list) else data.get("data", [])
-        result = []
-        for m in markets:
-            slug = m.get("slug", "")
-            if any(s in slug.lower() for s in SKIP_SLUGS):
-                continue
-            vol = float(m.get("volume", 0) or 0)
-            if vol < 5000:
-                continue
-            raw_prices = m.get("outcomePrices", [])
-            if isinstance(raw_prices, str):
-                try:
-                    raw_prices = json.loads(raw_prices)
-                except:
-                    raw_prices = []
-            if not isinstance(raw_prices, list) or len(raw_prices) < 2:
-                continue
-            yes_price = float(raw_prices[0])
-            result.append({
-                "slug":     slug,
-                "question": m.get("question", ""),
-                "yes":      yes_price,
-                "no":       float(raw_prices[1]) if len(raw_prices) > 1 else 1.0 - yes_price,
-                "volume":   vol,
-                "url":      f"https://polymarket.com/market/{slug}",
-                "end_date": m.get("endDate", ""),
-            })
-        return result
+        increment_counter()
+        if r.status_code == 200:
+            return r.json().get("articles", [])
+        log(f"  {category}: {r.status_code}")
     except Exception as e:
-        log(f"  Failed to fetch markets: {e}")
+        log(f"  {category} exception: {e}")
+    return []
+
+
+def search_news(query: str) -> list:
+    if api_remaining() < 10:
+        return []
+    try:
+        r = requests.get(
+            f"{NEWS_API_BASE}/everything",
+            params={"apiKey": NEWS_API_KEY, "q": query, "pageSize": 5,
+                    "sortBy": "publishedAt", "language": "en"},
+            timeout=15
+        )
+        increment_counter()
+        if r.status_code == 200:
+            arts = r.json().get("articles", [])
+            # Filter out [Removed] articles
+            return [a for a in arts if a.get("title") and a["title"] != "[Removed]"]
+        log(f"  search '{query[:30]}': {r.status_code}")
+    except Exception as e:
+        log(f"  search exception: {e}")
+    return []
+
+
+PMXT_BIN = "/usr/bin/python3"
+
+
+PMXT_MARKETS = "/usr/bin/python3 /tmp/pmxt_markets.py 200"
+
+
+def get_target_markets_via_pmxt() -> list:
+    """Fetch Polymarket markets via /tmp/pmxt_markets.py helper."""
+    try:
+        r = __import__("subprocess").run(
+            PMXT_MARKETS, shell=True,
+            capture_output=True, text=True, timeout=25,
+        )
+        if r.returncode != 0:
+            log(f"  pmxt markets error: {r.stderr.strip()[:100]}")
+            return []
+        return json.loads(r.stdout.strip())
+    except Exception as e:
+        log(f"  pmxt markets exception: {e}")
         return []
 
 
-def keyword_match_score(article_text: str, market_question: str) -> float:
-    """
-    Simple keyword overlap score between article text and market question.
-    Returns 0.0–1.0. Higher = more relevant.
-    """
+# ── Relevance scoring ──────────────────────────────────────────────────────────
+STOPWORDS = {"that", "this", "with", "from", "have", "they", "been",
+             "what", "when", "your", "their", "will", "from", "about",
+             "after", "before", "over", "into", "more", "some", "such"}
+
+
+def relevance_score(article_title: str, article_desc: str, market_question: str) -> float:
+    """Keyword overlap score. Returns 0.0–1.0."""
     q_words = set(re.findall(r"[a-z]{4,}", market_question.lower()))
-    a_words = set(re.findall(r"[a-z]{4,}", article_text.lower()))
-    a_words_lower = set(w for w in a_words if w not in {"that", "this", "with", "from", "have", "they", "will", "been", "what", "when", "your", "their"})
-    overlap = q_words & a_words_lower
+    a_text  = (article_title + " " + article_desc).lower()
+    a_words = set(w for w in re.findall(r"[a-z]{4,}", a_text)
+                  if w not in STOPWORDS)
+    overlap = q_words & a_words
     if not q_words:
         return 0.0
     return len(overlap) / len(q_words)
 
 
-def detect_trigger_type(
-    article: dict, market: dict, all_markets: list
-) -> tuple[str, str, float, float, float, float] | None:
+# ── Signal detection ───────────────────────────────────────────────────────────
+def is_credible(source_name: str) -> bool:
+    return any(cs.lower() in source_name.lower() for cs in CREDIBLE_SOURCES)
+
+
+def build_signal(
+    article: dict,
+    market: dict,
+    trigger_type: str,
+    direction: str,
+    confidence: float,
+    entry: float,
+    target: float,
+    stop: float,
+    rationale: str,
+) -> int | None:
     """
-    Returns (trigger_type, direction, confidence, entry, target, stop) if a
-    signal is warranted, else None.
-
-    NEWS_CORROBORATION  — article directly confirms current market direction
-    NEWS_CONTRADICTION  — article undermines current market odds
-    CATALYST_NEWS       — breaking news about upcoming event changes odds
+    Store a news signal if URL hasn't been processed recently
+    and market isn't on cooldown.
     """
-    title   = article.get("title", "") or ""
-    desc    = article.get("description", "") or ""
-    content = article.get("content", "") or ""
-    source  = article.get("source", {}).get("name", "Unknown")
-    text    = f"{title} {desc} {content}".lower()
-    question = market["question"]
-    q_lower  = question.lower()
-    yes = market["yes"]
-    no  = market["no"]
+    news_url = article.get("url", "")
+    if not news_url or news_url == "[Removed]":
+        return None
+    slug = market["slug"]
 
-    score = keyword_match_score(text, question)
-    if score < 0.15:
-        return None  # Not relevant to this market
+    if is_url_processed(news_url):
+        return None
+    if is_market_cooldown(slug):
+        return None
 
-    # ── Breaking / high-signal keywords ────────────────────────────────────
-    BREAKING_KW  = ["breaking", "just in", "developing", "exclusive", "urgent"]
-    NEGATIVE_KW  = ["won't", "will not", "fail", "not happen", "unlikely", "defeated", "rejected", "denied", "sanctions lifted", "deal collapsed"]
-    POSITIVE_KW  = ["will", "will happen", "passes", "approved", "elected", "reaches deal", "announces", "confirms", "breakthrough"]
-    DEADLINE_KW  = ["days away", "within days", "imminent", "deadline", "this week", "by friday", "hours away"]
+    source = article.get("source", {}).get("name", "Unknown")
+    sid = insert_news_signal(
+        market_slug=slug,
+        question=market["title"],
+        trigger_type=trigger_type,
+        news_title=article.get("title", ""),
+        news_url=news_url,
+        source=source,
+        direction=direction,
+        confidence=confidence,
+        entry_price=entry,
+        target_price=target,
+        stop_loss=stop,
+        rationale=rationale,
+    )
+    return sid
 
-    is_breaking = any(k in text for k in BREAKING_KW)
-    has_deadline = any(k in text for k in DEADLINE_KW)
 
-    # ── Contradiction: news says opposite of what market is pricing ─────────
-    if yes > 0.60:
-        if any(k in text for k in NEGATIVE_KW):
-            divergence = yes - 0.50
-            if divergence > 0.10:
-                trigger = "NEWS_CONTRADICTION"
-                direction = "NO"
-                entry = no + 0.01
-                target = max(no - 0.15, 0.05)
-                stop   = min(no + 0.08, 0.50)
-                confidence = min(0.60 + divergence * 0.5, 0.82)
-                rationale = (
-                    f"News contradicts market: '{title[:80]}' — "
-                    f"market pricing {yes:.0%} YES but credible source ({source}) "
-                    f"suggests outcome is less likely than odds imply."
-                )
-                return (trigger, direction, confidence, entry, target, stop, rationale)
+def detect_signals(article: dict, markets: list) -> list:
+    """
+    Given an article and all target markets, return list of (signal_id, description).
+    Only fires on high-relevance matches from credible sources.
+    """
+    title    = article.get("title", "") or ""
+    desc     = article.get("description", "") or ""
+    content  = article.get("content", "") or ""
+    source   = article.get("source", {}).get("name", "Unknown")
+    text     = (title + " " + desc + " " + content).lower()
+    signals  = []
 
-    if yes < 0.40:
-        if any(k in text for k in POSITIVE_KW):
+    if not title or title == "[Removed]":
+        return []
+
+    # Best market match
+    best_mkt, best_score = None, 0.0
+    for m in markets:
+        sc = relevance_score(title, desc, m["title"])
+        if sc > best_score:
+            best_score = sc
+            best_mkt = m
+
+    if not best_mkt or best_score < 0.18:
+        return []
+
+    yes  = best_mkt["yes"]
+    no   = best_mkt["no"]
+    mkt  = best_mkt
+
+    # ── Signal type detection ───────────────────────────────────────────────
+
+    # 1. NEWS_CORROBORATION: credible source confirms YES direction
+    if yes < 0.55 and is_credible(source):
+        POSITIVE = ["will", "passes", "approved", "elected", "reaches deal",
+                    "announces", "confirms", "breakthrough", "wins", "signs",
+                    "success", "positive", "in favor", "ahead", "leads"]
+        if any(k in text for k in POSITIVE):
             divergence = 0.50 - yes
-            if divergence > 0.10:
-                trigger = "NEWS_CORROBORATION"
-                direction = "YES"
-                entry = yes + 0.01
-                target = min(yes + 0.18, 0.95)
-                stop   = max(yes - 0.08, 0.20)
-                confidence = min(0.60 + divergence * 0.5, 0.82)
-                rationale = (
-                    f"News corroborates upside: '{title[:80]}' — "
-                    f"source ({source}) reports developments supporting YES. "
-                    f"Market at {yes:.0%} underprices the scenario."
-                )
-                return (trigger, direction, confidence, entry, target, stop, rationale)
+            entry  = yes + 0.01
+            target = min(yes + 0.18, 0.92)
+            stop   = max(yes - 0.08, 0.25)
+            conf   = min(0.62 + divergence * 0.8 + (0.1 if is_credible(source) else 0), 0.84)
+            rat    = (f"News corroborates YES: '{title[:80]}' — "
+                      f"{source} supports outcome. Market at {yes:.0%} undervalues scenario.")
+            sid = build_signal(article, mkt, "NEWS_CORROBORATION", "YES", conf,
+                               entry, target, stop, rat)
+            if sid:
+                signals.append((sid, f"NEWS_CORROBORATION on {mkt['title'][:40]}"))
 
-    # ── Catalyst: deadline approach or breaking news about known event ───────
-    if has_deadline or is_breaking:
-        if yes > 0.40 and yes < 0.60:
-            # Market is in coin-flip range — breaking news can move it
-            direction = "YES" if any(k in text for k in POSITIVE_KW) else "NO" if any(k in text for k in NEGATIVE_KW) else None
-            if direction:
-                if direction == "YES":
-                    entry = yes + 0.01
-                    target = min(yes + 0.12, 0.92)
-                    stop   = max(yes - 0.06, 0.25)
-                else:
-                    entry = no + 0.01
-                    target = max(no - 0.10, 0.08)
-                    stop   = min(no + 0.06, 0.75)
-                confidence = 0.68 if is_breaking else 0.62
-                rationale = (
-                    f"Catalyst: {title[:80]} — "
-                    f"Breaking news shifts near-term probability. "
-                    f"Market at {yes:.0%} hasn't fully repriced the {direction} scenario."
-                )
-                return (trigger if 'trigger' in dir() else "CATALYST_NEWS",
-                        direction, confidence, entry, target, stop, rationale)
+    # 2. NEWS_CONTRADICTION: credible source confirms NO direction
+    if yes > 0.45 and is_credible(source):
+        NEGATIVE = ["won't", "will not", "fail", "not happen", "unlikely",
+                     "defeated", "rejected", "denied", "collapsed", "against",
+                     "drops", "falls", "recession", "reverses"]
+        if any(k in text for k in NEGATIVE):
+            divergence = yes - 0.50
+            entry  = no + 0.01
+            target = max(no - 0.12, 0.08)
+            stop   = min(no + 0.08, 0.55)
+            conf   = min(0.62 + divergence * 0.8 + (0.1 if is_credible(source) else 0), 0.84)
+            rat    = (f"News contradicts YES: '{title[:80]}' — "
+                      f"{source} reports contrary evidence. Market at {yes:.0%} overprices YES.")
+            sid = build_signal(article, mkt, "NEWS_CONTRADICTION", "NO", conf,
+                               entry, target, stop, rat)
+            if sid:
+                signals.append((sid, f"NEWS_CONTRADICTION on {mkt['title'][:40]}"))
 
-    return None
+    # 3. BREAKING_NEWS: urgent/imminent news on a coin-flip market
+    if 0.35 <= yes <= 0.65:
+        BREAKING = ["breaking", "just in", "developing", "urgent", "imminent",
+                    "within days", "hours away", "this week", "tomorrow", "today"]
+        if any(k in text for k in BREAKING):
+            direction = "YES" if any(k in text for k in
+                ["will", "passes", "approved", "wins", "success", "positive"]) else "NO"
+            entry  = yes + 0.01 if direction == "YES" else no + 0.01
+            target = min(yes + 0.15, 0.92) if direction == "YES" else max(no - 0.12, 0.08)
+            stop   = max(yes - 0.07, 0.25) if direction == "YES" else min(no + 0.07, 0.75)
+            conf   = 0.70 if is_credible(source) else 0.64
+            rat    = (f"BREAKING: '{title[:80]}' — "
+                      f"Time-sensitive news. Market at {yes:.0%} hasn't repriced this.")
+            sid = build_signal(article, mkt, "BREAKING_NEWS", direction, conf,
+                               entry, target, stop, rat)
+            if sid:
+                signals.append((sid, f"BREAKING on {mkt['title'][:40]}"))
+
+    return signals
 
 
-# ── Main run ──────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 def run():
     log("=== News Monitor Run Starting ===")
-    remaining = newsapi_remaining()
-    log(f"  NewsAPI remaining today: {remaining}")
+    remaining = api_remaining()
+    log(f"  NewsAPI budget: {remaining}/1000")
 
-    if remaining < 5:
-        log("  Skipping run — too few API calls remaining.")
-        return
+    if remaining < 10:
+        log("  Skipping — too few API calls remaining.")
+        return 0
 
-    # 1. Fetch top headlines from all categories
+    # 1. Fetch top headlines from 5 categories (5 API calls)
     all_articles = []
     for cat in CATEGORIES:
-        if remaining - 5 < 0:
+        if remaining < 5:
             break
-        arts = fetch_top_headlines(category=cat, page_size=MAX_RESULTS_PER_QUERY)
+        arts = fetch_headlines(cat)
         all_articles.extend(arts)
-        remaining = newsapi_remaining()
-        log(f"  {cat}: got {len(arts)} articles, {remaining} API calls left")
-        time.sleep(0.3)  # gentle rate limiting
+        remaining = api_remaining()
+        log(f"  {cat}: {len(arts)} articles, {remaining} calls left")
+        time.sleep(0.25)
 
-    # 2. Fetch active Polymarket markets
-    markets = get_active_markets(limit=50)
-    log(f"  Active markets fetched: {len(markets)}")
+    # 2. Also do 2-3 targeted searches if budget allows (uses more calls)
+    if remaining >= 20:
+        for q in TARGETED_SEARCHES[:3]:
+            arts = search_news(q)
+            all_articles.extend(arts)
+            remaining = api_remaining()
+            time.sleep(0.25)
 
-    # 3. Cross-reference articles → markets
-    signals_generated = 0
-    for article in all_articles:
-        title = article.get("title", "") or ""
-        if not title or title == "[Removed]":
-            continue
+    log(f"  Total articles collected: {len(all_articles)}")
 
-        # Find best matching market
-        best_match = None
-        best_score = 0.0
-        for mkt in markets:
-            score = keyword_match_score(f"{title} {article.get('description','')}", mkt["question"])
-            if score > best_score:
-                best_score = score
-                best_match = mkt
+    # Deduplicate by URL before processing
+    seen_urls = set()
+    unique_articles = []
+    for a in all_articles:
+        url = a.get("url", "")
+        if url and url != "[Removed]" and url not in seen_urls:
+            seen_urls.add(url)
+            unique_articles.append(a)
+    log(f"  Unique articles after dedup: {len(unique_articles)}")
 
-        if not best_match or best_score < 0.15:
-            continue
+    # 3. Fetch target Polymarket markets via pmxt
+    markets = get_target_markets_via_pmxt()
+    log(f"  Target Polymarket markets: {len(markets)}")
 
-        # Check for whale/trader activity keywords
-        trader_kw = ["large position", "whale", "institution", "bought", "sold", "accumulated",
-                      "million shares", "million dollars", "hedge fund", "billionaire"]
-        is_trader_news = any(k in (title + article.get("description","")).lower() for k in trader_kw)
+    # 4. Generate signals
+    total = 0
+    for article in unique_articles:
+        sigs = detect_signals(article, markets)
+        for sid, desc in sigs:
+            emoji = "📰" if "CORROB" in desc else "🔴" if "CONTRAD" in desc else "🚨"
+            log(f"  {emoji} [{sid}]: {desc}")
+            total += 1
 
-        if is_trader_news:
-            # Whale news — look for matching market
-            mkt = best_match
-            yes = mkt["yes"]
-            direction = "YES" if yes < 0.50 else "NO"  # contrarian on large player moves
-            entry = yes + 0.01 if direction == "YES" else mkt["no"] + 0.01
-            target = min(yes + 0.12, 0.90) if direction == "YES" else max(mkt["no"] - 0.10, 0.10)
-            stop   = max(yes - 0.08, 0.25) if direction == "YES" else min(mkt["no"] + 0.08, 0.75)
-            confidence = 0.70
-            rationale = (
-                f"Whale Activity: '{title[:80]}' — "
-                f"Significant capital movement reported by {article.get('source',{}).get('name','a source')}. "
-                f"Smart money positioning detected on Polymarket at {yes:.0%}."
-            )
-            signal_id = insert_news_signal(
-                market_slug=mkt["slug"], question=mkt["question"],
-                trigger_type="WHALE_NEWS",
-                news_title=title, news_url=article.get("url",""),
-                source=article.get("source",{}).get("name","Unknown"),
-                direction=direction, confidence=confidence,
-                entry_price=entry, target_price=target, stop_loss=stop,
-                rationale=rationale,
-            )
-            log(f"  🐋 WHALE signal [{signal_id}]: {mkt['question'][:50]}")
-            signals_generated += 1
-            continue
-
-        # Standard news corroboration/contradiction check
-        result = detect_trigger_type(article, best_match, markets)
-        if result:
-            trigger, direction, confidence, entry, target, stop, rationale = result
-            mkt = best_match
-            signal_id = insert_news_signal(
-                market_slug=mkt["slug"], question=mkt["question"],
-                trigger_type=trigger,
-                news_title=title, news_url=article.get("url",""),
-                source=article.get("source",{}).get("name","Unknown"),
-                direction=direction, confidence=confidence,
-                entry_price=entry, target_price=target, stop_loss=stop,
-                rationale=rationale,
-            )
-            emoji = "📰" if "CORROBORATION" in trigger else "🔴" if "CONTRADICTION" in trigger else "⏰"
-            log(f"  {emoji} {trigger} [{signal_id}]: {mkt['question'][:50]}")
-            signals_generated += 1
-
-    log(f"=== News Monitor Run Complete: {signals_generated} signals generated ===")
-    return signals_generated
+    log(f"=== News Monitor Complete: {total} signals ===")
+    return total
 
 
 if __name__ == "__main__":
