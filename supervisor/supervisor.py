@@ -30,17 +30,19 @@ NIM_KEY_3 = os.getenv("NVIDIA_NIM_KEY_3", "")
 NIM_KEY_4 = os.getenv("NVIDIA_NIM_KEY_4", "")
 NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
-# ── Model Assignments ─────────────────────────────────────────────────
-# MiniMax M2.7 (CEO/CTO) — full reasoning for strategic roles
-# MiniMax M2.5 (VPs, GEPA) — fast throughput for execution roles
-# NIM Key 2: SWEs + FE + DevOps (code tasks)
-# NIM Key 3: Content + Marketing + Sales + HR + Legal (text tasks)
-# NIM Key 4: Research + Security + Design (analysis tasks)
+# ── Model Assignments ─────────────────────────────────────────────────────────────────────────────────
+# CONFIRMED WORKING COMBINATIONS (tested 2026-04-20):
+#   NIM_KEY_2: nemotron-mini-4b ✓, kimi-k2.5 ✓, mistral-nemotron ✓, nemotron-4-mini ✓
+#   NIM_KEY_3: kimi-k2.5 ✓, mixtral-8x7b ✓, mistral-nemotron ✓, ministral-14b ✓
+#   NIM_KEY_4: kimi-k2.5 ✓, devstral-2-123b ✓, nemotron-mini-4b ✓, mistral-nemotron ✓
+#
+# Token budget: NIM keys are rate-limited. Assign high-frequency simple tasks to smaller models.
+# Priority model: kimi-k2.5 for content quality (content-writer, seo, mkt-campaigns).
+# SWE/DevOps: nemotron-mini-4b for code (fast, cheap, sufficient for code review/backlog tasks).
 ROLE_MODELS = {
-    # MiniMax — Strategic
+    # ── MiniMax — Strategic + Execution (unlimited, used for all VPs and ops roles) ──
     "ceo":             {"provider": "minimax", "model": "MiniMax-M2.7", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     "cto":             {"provider": "minimax", "model": "MiniMax-M2.7", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
-    # MiniMax — Execution
     "coo":             {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     "cfo":             {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     "cmo":             {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
@@ -50,29 +52,37 @@ ROLE_MODELS = {
     "vp-sales":        {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     "vp-hr":           {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
     "vp-cs":           {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
-    "gepa-optimizer":  {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
-    # NIM Key 2 — Code
-    "swe-1":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
-    "swe-2":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
-    "swe-3":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
-    "swe-4":           {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
+    "gepa-optimizer":   {"provider": "minimax", "model": "MiniMax-M2.5", "key": "MINIMAX", "api_url": "https://api.minimax.io/anthropic/v1"},
+
+    # ── NIM Key 2 — SWE + FE + DevOps (code tasks) ──
+    # kimi-k2.5 for all code work: better quality, faster execution, larger context
+    # nemotron-mini reserved for simple triage/devops-only tasks
+    "swe-1":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
+    "swe-2":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
+    "swe-3":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
+    "swe-4":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
+    "devops":           {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
     "fe-1":            {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
     "fe-2":            {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_2"},
-    "devops":          {"provider": "nvidia_nim", "model": "nvidia/nemotron-4-mini-hin-4b", "key": "NIM_KEY_2"},
-    # NIM Key 3 — Content + Campaigns (Mistral Nemo stable on this key)
-    "content-writer":  {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    "seo":             {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    "mkt-campaigns":   {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    "sales-dr":        {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    "support":         {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    "hr":              {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    "legal":           {"provider": "nvidia_nim", "model": "mistralai/mistral-nemo-12b-instruct", "key": "NIM_KEY_3"},
-    # NIM Key 4 — Research + Security + Design
+
+    # ── NIM Key 3 — Support/Sales (short response tasks) ──
+    # mistral-nemotron for short-form: support replies, sales DR, HR, Legal
+    # kimi-k2.5 for content/SEO/mkt (needs best quality)
+    "content-writer":  {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_3"},
+    "seo":             {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_3"},
+    "mkt-campaigns":   {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_3"},
+    "sales-dr":        {"provider": "nvidia_nim", "model": "mistralai/mistral-nemotron", "key": "NIM_KEY_3"},
+    "support":         {"provider": "nvidia_nim", "model": "mistralai/mistral-nemotron", "key": "NIM_KEY_3"},
+    "hr":              {"provider": "nvidia_nim", "model": "mistralai/mistral-nemotron", "key": "NIM_KEY_3"},
+    "legal":           {"provider": "nvidia_nim", "model": "mistralai/mistral-nemotron", "key": "NIM_KEY_3"},
+
+    # ── NIM Key 4 — Research + Security + Design (analysis tasks) ──
+    # kimi-k2.5 for data/analysis work; devstral-2 for security review
     "data-eng":        {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
     "data-scientist":  {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
-    "security":        {"provider": "nvidia_nim", "model": "mistralai/devstral-2-123b-instruct-2512", "key": "NIM_KEY_4"},
     "designer":        {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
-    "gepa-judge":      {"provider": "nvidia_nim", "model": "meta/llama-3.1-70b-instruct", "key": "NIM_KEY_4"},
+    "gepa-judge":      {"provider": "nvidia_nim", "model": "moonshotai/kimi-k2.5", "key": "NIM_KEY_4"},
+    "security":        {"provider": "nvidia_nim", "model": "mistralai/devstral-2-123b-instruct-2512", "key": "NIM_KEY_4"},
 }
 
 # ── Role Schedules (cron format) ────────────────────────────────────
@@ -295,10 +305,20 @@ def run_nim_task(role: str, model: str, api_url: str, api_key: str, prompt: str,
         "Content-Type": "application/json",
     }
 
+    # Cap max_tokens to model context limits (prevents 413 errors)
+    MAX_CONTEXT = {
+        "nvidia/nemotron-mini-4b-instruct": 3000,
+        "mistralai/mistral-nemotron": 3000,
+        "mistralai/mistral-7b-instruct-v0.3": 3000,
+        "mistralai/ministral-14b-instruct-2512": 3000,
+    }
+    cap = MAX_CONTEXT.get(model, 8000)
+    effective_max = min(max_tokens, cap)
+
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 8000,
+        "max_tokens": effective_max,
         "temperature": 0.7,
     }).encode()
 
