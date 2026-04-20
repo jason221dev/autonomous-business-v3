@@ -110,9 +110,8 @@ HOME_TEMPLATE = """
         <div class="container">
             <div class="logo">Predict<span>221</span></div>
             <nav>
-                <a href="/">Home</a>
-                <a href="/setups">Setups</a>
-                <a href="/articles">Insights</a>
+                <a href="/">Insights</a>
+                <a href="/articles">All Articles</a>
                 <a href="/record">Record</a>
             </nav>
         </div>
@@ -120,8 +119,8 @@ HOME_TEMPLATE = """
 
     <section class="hero">
         <div class="container">
-            <h1>Trade <span>Prediction Markets</span> Like a Pro</h1>
-            <p>Actionable setups with entry prices, targets, and stop losses — backed by a transparent win/loss record.</p>
+            <h1>Understand Markets <span>Deeper</span></h1>
+            <p>Editorial insights from Polymarket prediction markets. Recommendations only when they add genuine edge — not generated for every market.</p>
             <a href="{{ referral_link }}" class="cta-button">Open Polymarket Account →</a>
         </div>
     </section>
@@ -152,8 +151,7 @@ HOME_TEMPLATE = """
                 <div class="record-summary">
                     <strong>{{ record.wins + record.losses + record.pushes }}</strong> resolved ·
                     <strong>{{ record.pushes }}</strong> pushes ·
-                    Avg R/R: <strong>{% if record.avg_roi != None %}{{ record.avg_roi|int }}%{% else %}—{% endif %}</strong>
-                    · <a href="/record" style="color:#58a6ff;">Full history →</a>
+                    <a href="/record" style="color:#58a6ff;">Full history →</a>
                 </div>
             </div>
 
@@ -190,48 +188,26 @@ HOME_TEMPLATE = """
     </section>
     {% endif %}
 
-    <section class="setups-section">
-        <div class="container">
-            <h2 class="section-title" style="font-size:1.3em;color:#e6edf3;border-left:4px solid #f0883e;padding-left:15px;margin-bottom:20px;">🎯 Active Trade Setups</h2>
-            {% if setups %}
-                {% for s in setups %}
-                <div class="setup-card">
-                    <div class="setup-header">
-                        <div class="setup-question">{{ s.question or s.market_slug }}</div>
-                        <span class="setup-side {% if s.side == 'YES' %}yes{% else %}no{% endif %}">{{ s.side }}</span>
-                    </div>
-                    <div class="setup-meta">
-                        <span class="setup-conf">{{ (s.confidence * 100)|int }}% confidence</span>
-                        <span class="setup-badge">{{ s.signal_type }}</span>
-                        <span style="color:#8b949e;font-size:0.9em">{{ s.generated_at[:10] if s.generated_at else '' }}</span>
-                    </div>
-                    <div class="setup-prices">
-                        <span>Entry: <strong>{{ (s.entry_price * 100)|round(1) }}%</strong></span>
-                        <span>Target: <strong style="color:#238636">{{ (s.target_price * 100)|round(1) }}%</strong></span>
-                        <span>Stop: <strong style="color:#f85149">{{ (s.stop_loss * 100)|round(1) }}%</strong></span>
-                    </div>
-                    <a href="/article/{{ s.market_slug }}" class="setup-link">View full setup →</a>
-                </div>
-                {% endfor %}
-            {% else %}
-                <p class="no-data">No active setups right now. Check back after the next signals run.</p>
-            {% endif %}
-            <div style="text-align:center;margin-top:20px">
-                <a href="/setups" style="color:#58a6ff;font-size:0.95em;">View all setups →</a>
-            </div>
-        </div>
-    </section>
-
     <section class="articles-section">
         <div class="container">
-            <h2 class="section-title" style="font-size:1.3em;color:#e6edf3;border-left:4px solid #f0883e;padding-left:15px;margin-bottom:20px;">📊 Latest Insights</h2>
+            <h2 class="section-title" style="font-size:1.3em;color:#e6edf3;border-left:4px solid #f0883e;padding-left:15px;margin-bottom:20px;">📖 Latest Insights</h2>
             {% for article in articles %}
-            <div class="article-card">
-                <h3>{{ article.title }}</h3>
-                <p>{{ article.summary }}</p>
-                <div class="meta">{{ article.date }} · {{ article.read_time }} min read</div>
-            </div>
+            <a href="/article/{{ article.slug }}" style="text-decoration:none;color:inherit">
+                <div class="article-card" style="cursor:pointer">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                        <h3 style="flex:1;color:#e6edf3;">{{ article.title }}</h3>
+                        {% if article.has_recommendation %}
+                        <span style="background:#238636;color:white;padding:3px 10px;border-radius:6px;font-size:0.75em;font-weight:600;white-space:nowrap;margin-left:15px">{{ article.rec_type }}</span>
+                        {% endif %}
+                    </div>
+                    <p>{{ article.summary }}</p>
+                    <div class="meta">{{ article.date }}</div>
+                </div>
+            </a>
             {% endfor %}
+            <div style="text-align:center;margin-top:20px">
+                <a href="/articles" style="color:#58a6ff;font-size:0.95em;">View all {{ articles|length }}+ articles →</a>
+            </div>
         </div>
     </section>
 
@@ -254,11 +230,17 @@ RECORD_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trading Record — Predict221</title>
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.6; }
+        header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 40px 0; border-bottom: 1px solid #30363d; }
+        header .container { max-width: 900px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
+        .logo { font-size: 1.8em; font-weight: 700; color: #58a6ff; }
+        .logo span { color: #f0883e; }
+        nav a { color: #e6edf3; text-decoration: none; margin-left: 20px; font-size: 0.95em; }
+        nav a:hover { color: #58a6ff; }
+        nav a.active { color: #58a6ff; font-weight: 600; }
         .container { max-width: 900px; margin: 0 auto; padding: 20px; }
-        h1 { color: #58a6ff; margin: 20px 0 10px; }
-        .back { color: #58a6ff; text-decoration: none; font-size: 0.9em; }
-        .back:hover { text-decoration: underline; }
+        h1 { color: #58a6ff; margin: 25px 0 10px; }
         .record-card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 30px; margin: 25px 0; }
         .record-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; text-align: center; }
         .record-stat { background: #21262d; border-radius: 10px; padding: 18px 10px; }
@@ -269,7 +251,6 @@ RECORD_TEMPLATE = """
         .pushes .num { color: #6e7681; }
         .pending .num { color: #f0883e; }
         .wr .num { color: #58a6ff; }
-        .pnl .num { color: #58a6ff; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.9em; }
         th { text-align: left; padding: 10px 8px; color: #8b949e; text-transform: uppercase; font-size: 0.75em; border-bottom: 1px solid #30363d; }
         td { padding: 12px 8px; border-bottom: 1px solid #21262d; }
@@ -285,8 +266,17 @@ RECORD_TEMPLATE = """
     </style>
 </head>
 <body>
+    <header>
+        <div class="container" style="padding:0 20px">
+            <div class="logo">Predict<span>221</span></div>
+            <nav>
+                <a href="/">Insights</a>
+                <a href="/articles">All Articles</a>
+                <a href="/record" class="active">Record</a>
+            </nav>
+        </div>
+    </header>
     <div class="container">
-        <a href="/" class="back">← Back to Predict221</a>
         <h1>📊 Full Trading Record</h1>
         {% if record %}
         <div class="record-card">
@@ -341,25 +331,38 @@ RECORD_TEMPLATE = """
 
 # ─── DATA FUNCTIONS ────────────────────────────────────────────────────────────
 
-def get_sample_articles():
-    return [
-        {
-            "title": "Bitcoin $120K Setup: Why 78% Odds Could Mean 3:1 Reward",
-            "summary": "Breaking down the high-confidence BTC price prediction market — entry at 62%, target at 85%, stop at 48%.",
-            "date": "April 20, 2026",
-            "read_time": 5,
-            "category": "Crypto"
-        },
-        {
-            "title": "Fed Rate Decision: How to Play the 99% No-Cut Market",
-            "summary": "With $117M in volume, this Fed decision trade has a 4:1 R/R setup. Here's the exact entry strategy.",
-            "date": "April 19, 2026",
-            "read_time": 4,
-            "category": "Economy"
-        },
-    ]
-
 ARTICLES_DIR = Path("/var/www/polymarket-site/articles")
+
+import re
+
+def _load_article_cards(limit=5) -> list:
+    """Load article cards from the articles directory"""
+    cards = []
+    for f in sorted(ARTICLES_DIR.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if f.name == "top-setups.html":
+            continue
+        try:
+            html = f.read_text()
+            title_match = re.search(r'<title>(.*?) —', html)
+            title = title_match.group(1) if title_match else f.stem[:60]
+            desc_match = re.search(r'<meta name="description" content="(.*?)">', html)
+            desc = desc_match.group(1)[:120] if desc_match else ""
+            has_rec = "rec-box" in html
+            rec_type_match = re.search(r'<span class="rec-type">([^<]+)</span>', html)
+            rec_type = rec_type_match.group(1) if rec_type_match else ""
+            cards.append({
+                "title": title,
+                "summary": desc,
+                "slug": f.stem,
+                "has_recommendation": has_rec,
+                "rec_type": rec_type,
+                "date": datetime.fromtimestamp(f.stat().st_mtime).strftime("%B %d, %Y"),
+            })
+        except Exception:
+            pass
+        if len(cards) >= limit:
+            break
+    return cards
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
 
@@ -370,22 +373,18 @@ def home():
             init_db()
             record = get_record()
             recent = get_recent_results(limit=10)
-            setups = get_active_signals(limit=5)
         except Exception:
             record = None
             recent = []
-            setups = []
     else:
         record = None
         recent = []
-        setups = []
 
-    articles = get_sample_articles()
+    articles = _load_article_cards(limit=5)
     return render_template_string(
         HOME_TEMPLATE,
         record=record,
         recent_results=recent,
-        setups=setups,
         articles=articles,
         referral_link=REFERRAL_LINK,
     )
@@ -478,19 +477,28 @@ def setups():
 
 @app.route("/articles")
 def articles():
-    files = sorted(ARTICLES_DIR.glob("*.html"))
-    # Exclude the dashboard from the articles list
+    files = sorted(ARTICLES_DIR.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
     article_files = [f for f in files if f.name != "top-setups.html"]
-    links = "".join(
-        f"<li><a href='/article/{f.stem}' style='color:#58a6ff;'>{f.stem[:80]}</a> ({f.stat().st_size//1024}KB)</li>"
-        for f in article_files
-    )
+    import re
+    links = []
+    for f in article_files:
+        try:
+            html = f.read_text()
+            title_match = re.search(r'<title>(.*?) —', html)
+            title = title_match.group(1) if title_match else f.stem[:60]
+            has_rec = "rec-box" in html
+            rec_match = re.search(r'<span class="rec-type">([^<]+)</span>', html)
+            rec_type = rec_match.group(1) if rec_match else ""
+            badge = f'<span style="background:#238636;color:white;padding:2px 8px;border-radius:4px;font-size:0.75em;margin-left:10px">{rec_type}</span>' if has_rec and rec_type else ""
+            links.append(f'<li><a href="/article/{f.stem}" style="color:#58a6ff;">{title}</a>{badge} <span style="color:#6e7681;font-size:0.8em">({f.stat().st_size//1024}KB)</span></li>')
+        except Exception:
+            links.append(f'<li><a href="/article/{f.stem}" style="color:#58a6ff;">{f.stem[:80]}</a></li>')
     return f"""
     <html><body style='background:#0d1117;color:#e6edf3;padding:40px;font-family:sans-serif'>
-    <h1>📊 Insights & Analysis</h1>
-    <p style='margin:15px 0'><a href='/' style='color:#58a6ff;'>← Back to home</a></p>
-    <p>{len(article_files)} articles generated</p>
-    <ul style='line-height:2'>{links or '<li style="color:#8b949e">No articles yet</li>'}</ul>
+    <a href='/' style='color:#58a6ff;'>← Back to Insights</a>
+    <h1 style='margin-top:20px;color:#e6edf3'>📖 All Insights</h1>
+    <p style='margin:15px 0;color:#8b949e'>{len(article_files)} articles — recommendations marked with 🟢</p>
+    <ul style='line-height:2.2;list-style:none;padding:0'>{''.join(links) or '<li style="color:#8b949e">No articles yet</li>'}</ul>
     </body></html>
     """
 
