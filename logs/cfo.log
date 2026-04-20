@@ -1,0 +1,30 @@
+
+============================================================
+[2026-04-20T16:41:04.546773] cfo (MiniMax MiniMax-M2.5)
+Task: You are the CFO. Your mission: financial health. Track revenue, expenses, invoices, and budget vs ac...
+Response: 
+Tokens: 328, Time: 1.4s
+
+============================================================
+[2026-04-20T16:44:46.441724] cfo (MiniMax MiniMax-M2.5)
+Task: You are the CFO. Your mission: financial health. Track revenue, expenses, invoices, and budget vs ac...
+Response: 
+I need financial data to execute this CFO review. Please provide:
+
+1. **Financial Statements** (Income Statement, Balance Sheet, Cash Flow Statement)
+2. **Revenue Data** - Monthly revenue breakdown, recurring vs one-time, by product/service
+3. **Expense Data** - Categorized expenses (payroll, software, marketing, operations, etc.)
+4. **Invoice Report** - All outstanding invoices (accounts receivable) and unpaid bills (accounts payable)
+5. **Budget vs Actuals** - Current budget and actual spending by category
+6. **Runway Calculation** - Current cash balance and monthly burn rate
+
+Once you provide this data, I will:
+- Analyze revenue trends and variance
+- Identify expense anomalies or unexpected spending
+- Flag overdue invoices or payment issues
+- Calculate precise runway
+- Identify one cost optimization opportunity
+- Prepare a financial health report for the CEO
+
+What financial data should I review first?
+Tokens: 799, Time: 18.4s

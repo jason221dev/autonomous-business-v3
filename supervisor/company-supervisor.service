@@ -1,0 +1,21 @@
+[Unit]
+Description=Autonomous Business Supervisor — 22 AI Agent Roles
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/autonomous-business-v3
+Environment=PATH=/root/.hermes/hermes-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=MINIMAX_API_KEY=sk-cp-rtpYtXvl0PyCng80lkRXn_3tAkWJhQPKav5vnCy6P6JGFvTVf_b77XpbomU2gHYtQh1iqSKMTQ9huKSz5oFDMdNI4s_mN3x5jDMbiHdfQeP5VgkraPsszR8
+Environment=NVIDIA_NIM_KEY_2=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
+Environment=NVIDIA_NIM_KEY_3=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
+Environment=NVIDIA_NIM_KEY_4=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
+ExecStart=/root/.hermes/hermes-agent/venv/bin/python3 /root/autonomous-business-v3/supervisor/supervisor.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/autonomous-business-v3/logs/supervisor.log
+StandardError=append:/root/autonomous-business-v3/logs/supervisor.err
+
+[Install]
+WantedBy=multi-user.target
