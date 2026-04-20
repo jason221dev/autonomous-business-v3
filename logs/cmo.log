@@ -1,0 +1,20 @@
+
+============================================================
+[2026-04-20T16:41:20.150488] cmo (MiniMax MiniMax-M2.5)
+Task: You are the CMO. Your mission: grow brand awareness and revenue through marketing. Review marketing ...
+Response: 
+Tokens: 741, Time: 15.6s
+
+============================================================
+[2026-04-20T16:44:48.345769] cmo (MiniMax MiniMax-M2.5)
+Task: You are the CMO. Your mission: grow brand awareness and revenue through marketing. Review marketing ...
+Response: I need to first understand what marketing data and reports are available to review. Let me gather the relevant information.
+<minimax:tool_call>
+<invoke name="ddn_search">
+<parameter name="query">marketing performance report campaign metrics analytics 2026</parameter>
+</invoke>
+<invoke name="ddn_search">
+<parameter name="query">social engagement metrics SEO rankings content performance</parameter>
+</invoke>
+</minimax:tool_call>
+Tokens: 380, Time: 1.9s

@@ -1,52 +1,39 @@
 version: '3.9'
 
-services:
+# ============================================================
+# Autonomous Business v3 — Production Deployment
+# 4 containers: postgres, redis, paperclip (optional), gateway
+# All 22 agent roles run as CRON tasks against the Hermes gateway
+# ============================================================
 
-  # ===== PAPERCLIP ORCHESTRATION =====
-  paperclip:
-    image: paperclipai/paperclip:latest
-    container_name: paperclip
-    ports:
-      - "3100:3100"
-    environment:
-      DATABASE_URL: postgresql://hermes:password@postgres:5432/paperclip
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - paperclip-data:/app/data
-      - hermes-sessions:/var/hermes/sessions:ro
-    restart: unless-stopped
-    networks:
-      - company-net
+services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: postgres
+    container_name: company-postgres
     environment:
-      POSTGRES_DB: paperclip
+      POSTGRES_DB: company
       POSTGRES_USER: hermes
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: hermes123
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hermes -d paperclip"]
+      test: ["CMD-SHELL", "pg_isready -U hermes -d company"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
     networks:
       - company-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   redis:
     image: redis:7-alpine
-    container_name: redis
-    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis-data:/data
+    container_name: company-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -55,508 +42,48 @@ services:
     restart: unless-stopped
     networks:
       - company-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
-  # ===== KEY 1: MINIMAX — C-SUITE + DEPT HEADS =====
-  hermes-ceo:
-    build: ./Dockerfile.hermes
-    container_name: hermes-ceo
-    command: hermes chat --config /etc/hermes/workers/ceo/config.yaml --session /var/hermes/sessions/ceo --adapter paperclip --heartbeat
+  # Paperclip — org scheduler & issue routing (optional, can run without)
+  paperclip:
+    image: ghcr.io/paperclip-ai/paperclip:latest
+    container_name: company-paperclip
+    ports:
+      - "3100:3100"
     environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
+      DATABASE_URL: postgresql://hermes:hermes123@postgres:5432/company
+      REDIS_URL: redis://redis:6379
+      PAPERCLIP_SECRET: hermes_secret_key_change_me
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/ceo:/etc/hermes/workers/ceo:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
+      - paperclip-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
     restart: unless-stopped
     networks:
       - company-net
-
-  hermes-cto:
-    build: ./Dockerfile.hermes
-    container_name: hermes-cto
-    command: hermes chat --config /etc/hermes/workers/cto/config.yaml --session /var/hermes/sessions/cto --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/cto:/etc/hermes/workers/cto:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-coo:
-    build: ./Dockerfile.hermes
-    container_name: hermes-coo
-    command: hermes chat --config /etc/hermes/workers/coo/config.yaml --session /var/hermes/sessions/coo --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/coo:/etc/hermes/workers/coo:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-cfo:
-    build: ./Dockerfile.hermes
-    container_name: hermes-cfo
-    command: hermes chat --config /etc/hermes/workers/cfo/config.yaml --session /var/hermes/sessions/cfo --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/cfo:/etc/hermes/workers/cfo:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-cmo:
-    build: ./Dockerfile.hermes
-    container_name: hermes-cmo
-    command: hermes chat --config /etc/hermes/workers/cmo/config.yaml --session /var/hermes/sessions/cmo --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/cmo:/etc/hermes/workers/cmo:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-vp-eng:
-    build: ./Dockerfile.hermes
-    container_name: hermes-vp-eng
-    command: hermes chat --config /etc/hermes/workers/vp-eng/config.yaml --session /var/hermes/sessions/vp-eng --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/vp-eng:/etc/hermes/workers/vp-eng:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-vp-product:
-    build: ./Dockerfile.hermes
-    container_name: hermes-vp-product
-    command: hermes chat --config /etc/hermes/workers/vp-product/config.yaml --session /var/hermes/sessions/vp-product --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/vp-product:/etc/hermes/workers/vp-product:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-vp-mktg:
-    build: ./Dockerfile.hermes
-    container_name: hermes-vp-mktg
-    command: hermes chat --config /etc/hermes/workers/vp-mktg/config.yaml --session /var/hermes/sessions/vp-mktg --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/vp-mktg:/etc/hermes/workers/vp-mktg:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-vp-sales:
-    build: ./Dockerfile.hermes
-    container_name: hermes-vp-sales
-    command: hermes chat --config /etc/hermes/workers/vp-sales/config.yaml --session /var/hermes/sessions/vp-sales --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/vp-sales:/etc/hermes/workers/vp-sales:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-vp-hr:
-    build: ./Dockerfile.hermes
-    container_name: hermes-vp-hr
-    command: hermes chat --config /etc/hermes/workers/vp-hr/config.yaml --session /var/hermes/sessions/vp-hr --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/vp-hr:/etc/hermes/workers/vp-hr:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-vp-cs:
-    build: ./Dockerfile.hermes
-    container_name: hermes-vp-cs
-    command: hermes chat --config /etc/hermes/workers/vp-cs/config.yaml --session /var/hermes/sessions/vp-cs --adapter paperclip --heartbeat
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/vp-cs:/etc/hermes/workers/vp-cs:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  # ===== KEY 2: NIM CODE — SWE ×4 + FRONTEND ×2 + DEVOPS =====
-  hermes-swe-1:
-    build: ./Dockerfile.hermes
-    container_name: hermes-swe-1
-    command: hermes chat --config /etc/hermes/workers/swe-1/config.yaml --session /var/hermes/sessions/swe-1 --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/swe-1:/etc/hermes/workers/swe-1:ro
-      - company-skills:/root/.hermes/skills:ro
-      - company-repo:/company/repo:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-swe-2:
-    build: ./Dockerfile.hermes
-    container_name: hermes-swe-2
-    command: hermes chat --config /etc/hermes/workers/swe-2/config.yaml --session /var/hermes/sessions/swe-2 --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/swe-2:/etc/hermes/workers/swe-2:ro
-      - company-skills:/root/.hermes/skills:ro
-      - company-repo:/company/repo:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-swe-3:
-    build: ./Dockerfile.hermes
-    container_name: hermes-swe-3
-    command: hermes chat --config /etc/hermes/workers/swe-3/config.yaml --session /var/hermes/sessions/swe-3 --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/swe-3:/etc/hermes/workers/swe-3:ro
-      - company-skills:/root/.hermes/skills:ro
-      - company-repo:/company/repo:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-swe-4:
-    build: ./Dockerfile.hermes
-    container_name: hermes-swe-4
-    command: hermes chat --config /etc/hermes/workers/swe-4/config.yaml --session /var/hermes/sessions/swe-4 --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/swe-4:/etc/hermes/workers/swe-4:ro
-      - company-skills:/root/.hermes/skills:ro
-      - company-repo:/company/repo:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-fe-1:
-    build: ./Dockerfile.hermes
-    container_name: hermes-fe-1
-    command: hermes chat --config /etc/hermes/workers/fe-1/config.yaml --session /var/hermes/sessions/fe-1 --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/fe-1:/etc/hermes/workers/fe-1:ro
-      - company-skills:/root/.hermes/skills:ro
-      - company-repo:/company/repo:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-fe-2:
-    build: ./Dockerfile.hermes
-    container_name: hermes-fe-2
-    command: hermes chat --config /etc/hermes/workers/fe-2/config.yaml --session /var/hermes/sessions/fe-2 --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/fe-2:/etc/hermes/workers/fe-2:ro
-      - company-skills:/root/.hermes/skills:ro
-      - company-repo:/company/repo:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-devops:
-    build: ./Dockerfile.hermes
-    container_name: hermes-devops
-    command: hermes chat --config /etc/hermes/workers/devops/config.yaml --session /var/hermes/sessions/devops --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_2}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/devops:/etc/hermes/workers/devops:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  # ===== KEY 3: NIM CONTENT — MARKETING + SALES + SUPPORT + HR + LEGAL =====
-  hermes-content-writer:
-    build: ./Dockerfile.hermes
-    container_name: hermes-content-writer
-    command: hermes chat --config /etc/hermes/workers/content-writer/config.yaml --session /var/hermes/sessions/content-writer --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/content-writer:/etc/hermes/workers/content-writer:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-seo:
-    build: ./Dockerfile.hermes
-    container_name: hermes-seo
-    command: hermes chat --config /etc/hermes/workers/seo/config.yaml --session /var/hermes/sessions/seo --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/seo:/etc/hermes/workers/seo:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-mkt-campaigns:
-    build: ./Dockerfile.hermes
-    container_name: hermes-mkt-campaigns
-    command: hermes chat --config /etc/hermes/workers/mkt-campaigns/config.yaml --session /var/hermes/sessions/mkt-campaigns --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/mkt-campaigns:/etc/hermes/workers/mkt-campaigns:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-sales-dr:
-    build: ./Dockerfile.hermes
-    container_name: hermes-sales-dr
-    command: hermes chat --config /etc/hermes/workers/sales-dr/config.yaml --session /var/hermes/sessions/sales-dr --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/sales-dr:/etc/hermes/workers/sales-dr:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-support:
-    build: ./Dockerfile.hermes
-    container_name: hermes-support
-    command: hermes chat --config /etc/hermes/workers/support/config.yaml --session /var/hermes/sessions/support --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/support:/etc/hermes/workers/support:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-hr:
-    build: ./Dockerfile.hermes
-    container_name: hermes-hr
-    command: hermes chat --config /etc/hermes/workers/hr/config.yaml --session /var/hermes/sessions/hr --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/hr:/etc/hermes/workers/hr:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-legal:
-    build: ./Dockerfile.hermes
-    container_name: hermes-legal
-    command: hermes chat --config /etc/hermes/workers/legal/config.yaml --session /var/hermes/sessions/legal --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_3}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/legal:/etc/hermes/workers/legal:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  # ===== KEY 4: NIM RESEARCH — DATA + SECURITY + DESIGN =====
-  hermes-data-eng:
-    build: ./Dockerfile.hermes
-    container_name: hermes-data-eng
-    command: hermes chat --config /etc/hermes/workers/data-eng/config.yaml --session /var/hermes/sessions/data-eng --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_4}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/data-eng:/etc/hermes/workers/data-eng:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-data-scientist:
-    build: ./Dockerfile.hermes
-    container_name: hermes-data-scientist
-    command: hermes chat --config /etc/hermes/workers/data-scientist/config.yaml --session /var/hermes/sessions/data-scientist --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_4}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/data-scientist:/etc/hermes/workers/data-scientist:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-security:
-    build: ./Dockerfile.hermes
-    container_name: hermes-security
-    command: hermes chat --config /etc/hermes/workers/security/config.yaml --session /var/hermes/sessions/security --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_4}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/security:/etc/hermes/workers/security:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  hermes-designer:
-    build: ./Dockerfile.hermes
-    container_name: hermes-designer
-    command: hermes chat --config /etc/hermes/workers/designer/config.yaml --session /var/hermes/sessions/designer --adapter paperclip --heartbeat
-    environment:
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_4}
-      PAPERCLIP_API_URL: http://paperclip:3100/api
-    volumes:
-      - hermes-sessions:/var/hermes/sessions
-      - ./worker-configs/designer:/etc/hermes/workers/designer:ro
-      - company-skills:/root/.hermes/skills:ro
-    working_dir: /root
-    restart: unless-stopped
-    networks:
-      - company-net
-
-  # ===== SELF-EVOLUTION ENGINE =====
-  hermes-evolution:
-    build: ./Dockerfile.hermes-evolution
-    container_name: hermes-evolution
-    command: python -m evolution.run --config /etc/hermes/evolution/config.yaml
-    environment:
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      NVIDIA_NIM_KEY: ${NVIDIA_NIM_KEY_4}
-      HERMES_SKILLS_DIR: /root/.hermes/skills
-    volumes:
-      - company-skills:/root/.hermes/skills
-      - evolution-data:/app/evolution_runs
-      - ./evolution/config:/etc/hermes/evolution:ro
-    working_dir: /app
-    restart: unless-stopped
-    networks:
-      - company-net
-
-volumes:
-  paperclip-data:
-  redis-data:
-  pg-data:
-  hermes-sessions:
-  company-skills:
-  company-repo:
-  evolution-data:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    profiles:
+      - scheduler   # Only starts with: docker-compose --profile scheduler up
 
 networks:
   company-net:
     driver: bridge
+
+volumes:
+  pg-data:
+  redis-data:
+  paperclip-data:
