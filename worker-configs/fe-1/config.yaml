@@ -1,0 +1,28 @@
+model:
+  provider: nvidia_nim
+  name: moonshotai/kimi-k2.5
+  max_tokens: 32000
+  temperature: 0.5
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: google/codegemma-7b
+  fast_threshold: 4000
+toolsets:
+  - terminal
+  - file
+  - web
+  - git
+  - code_execution
+  - vision
+session:
+  persist: true
+  resume: true
+skills:
+  - popular-web-designs
+  - github-pr-workflow
+  - test-driven-development
+  - systematic-debugging
+  - p5js
+heartbeat:
+  interval_minutes: 15
+  timeout_seconds: 240

@@ -1,0 +1,22 @@
+model:
+  provider: nvidia_nim
+  name: nvidia/nemotron-4-mini-hin-4b
+  max_tokens: 2048
+  temperature: 0.3
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  complex_model: deepseek-ai/deepseek-coder-6.7b-instruct
+  complex_threshold: 2000
+toolsets:
+  - terminal
+  - file
+  - git
+session:
+  persist: true
+  resume: true
+skills:
+  - github-repo-management
+  - github-pr-workflow
+heartbeat:
+  interval_minutes: 15
+  timeout_seconds: 60

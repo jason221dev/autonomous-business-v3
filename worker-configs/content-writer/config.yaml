@@ -1,0 +1,26 @@
+model:
+  provider: nvidia_nim
+  name: moonshotai/kimi-k2.5
+  max_tokens: 48000
+  temperature: 0.8
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: mistralai/mixtral-8x7b-instruct-v0.1
+  fast_threshold: 8000
+toolsets:
+  - terminal
+  - file
+  - web
+  - creative
+session:
+  persist: true
+  resume: true
+skills:
+  - xurl
+  - youtube-content
+  - ascii-art
+  - blogwatcher
+  - popular-web-designs
+heartbeat:
+  interval_minutes: 20
+  timeout_seconds: 300

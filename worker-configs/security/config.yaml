@@ -1,0 +1,27 @@
+model:
+  provider: nvidia_nim
+  name: mistralai/devstral-2-123b-instruct-2512
+  max_tokens: 32000
+  temperature: 0.3
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: google/codegemma-7b
+  fast_threshold: 8000
+  deep_model: meta/llama-3.1-70b-instruct
+  deep_threshold: 32000
+toolsets:
+  - terminal
+  - file
+  - web
+  - git
+  - code_execution
+session:
+  persist: true
+  resume: true
+skills:
+  - systematic-debugging
+  - github-code-review
+  - requesting-code-review
+heartbeat:
+  interval_minutes: 30
+  timeout_seconds: 300

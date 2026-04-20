@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+# Install Node.js, git, curl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    git \
+    curl \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Hermes Agent + Evolution dependencies
+RUN pip install --no-cache-dir \
+    hermes-agent \
+    dspy-ai \
+    anthropic \
+    openai \
+    requests \
+    hf \
+    wandb
+
+# Clone skill repo
+RUN mkdir -p /root/.hermes/skills /app/evolution_runs
+
+WORKDIR /app
+
+CMD ["python", "-m", "evolution.run", "--config", "/etc/hermes/evolution/config.yaml"]

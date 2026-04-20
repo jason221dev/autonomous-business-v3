@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+# Install Node.js, git, curl (required for Hermes and NIM API calls)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    git \
+    curl \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Hermes Agent
+RUN pip install --no-cache-dir hermes-agent
+
+# Install common skills dependencies
+RUN pip install --no-cache-dir \
+    anthropic \
+    openai \
+    requests \
+    gh \
+    && npm install -g gh
+
+# Create hermes dirs
+RUN mkdir -p /root/.hermes/skills /var/hermes/sessions
+
+WORKDIR /root
+
+# Default command (overridden per service in docker-compose)
+CMD ["bash"]

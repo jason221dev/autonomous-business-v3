@@ -1,0 +1,23 @@
+model:
+  provider: nvidia_nim
+  name: meta/llama-3.1-8b-instruct
+  max_tokens: 16000
+  temperature: 0.5
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: gemma/gemma2-9b-instruct
+  fast_threshold: 2000
+toolsets:
+  - terminal
+  - file
+  - web
+  - session_search
+session:
+  persist: true
+  resume: true
+skills:
+  - github-issues
+  - notion
+heartbeat:
+  interval_minutes: 5
+  timeout_seconds: 60

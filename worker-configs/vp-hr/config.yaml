@@ -1,0 +1,21 @@
+model:
+  provider: minimax
+  name: MiniMax-M2.5
+  max_tokens: 16000
+  temperature: 0.4
+toolsets:
+  - terminal
+  - file
+  - web
+  - session_search
+session:
+  persist: true
+  resume: true
+skills:
+  - plan
+  - notion
+  - google-workspace
+  - writing-plans
+heartbeat:
+  interval_minutes: 20
+  timeout_seconds: 180

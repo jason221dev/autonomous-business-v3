@@ -1,0 +1,28 @@
+model:
+  provider: minimax
+  name: MiniMax-Text-01
+  max_tokens: 32000
+  temperature: 0.5
+toolsets:
+  - terminal
+  - file
+  - web
+  - git
+  - code_execution
+  - vision
+  - session_search
+session:
+  persist: true
+  resume: true
+skills:
+  - github-pr-workflow
+  - github-code-review
+  - github-repo-management
+  - requesting-code-review
+  - test-driven-development
+  - systematic-debugging
+  - codebase-inspection
+  - subagent-driven-development
+heartbeat:
+  interval_minutes: 15
+  timeout_seconds: 300

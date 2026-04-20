@@ -1,0 +1,27 @@
+model:
+  provider: nvidia_nim
+  name: google/gemma-3-27b-it
+  max_tokens: 48000
+  temperature: 0.5
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: google/gemma-3-12b-it
+  fast_threshold: 8000
+toolsets:
+  - terminal
+  - file
+  - web
+  - code_execution
+  - vision
+session:
+  persist: true
+  resume: true
+skills:
+  - jupyter-live-kernel
+  - arxiv
+  - polymarket
+  - weights-and-biases
+  - maps
+heartbeat:
+  interval_minutes: 25
+  timeout_seconds: 360

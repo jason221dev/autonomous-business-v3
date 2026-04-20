@@ -1,0 +1,23 @@
+model:
+  provider: nvidia_nim
+  name: moonshotai/kimi-k2-instruct
+  max_tokens: 32000
+  temperature: 0.6
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: meta/llama-3.1-8b-instruct
+  fast_threshold: 4000
+toolsets:
+  - terminal
+  - file
+  - web
+session:
+  persist: true
+  resume: true
+skills:
+  - xurl
+  - notion
+  - plan
+heartbeat:
+  interval_minutes: 15
+  timeout_seconds: 180

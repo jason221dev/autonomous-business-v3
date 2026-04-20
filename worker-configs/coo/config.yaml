@@ -1,0 +1,23 @@
+model:
+  provider: minimax
+  name: MiniMax-M2.5
+  max_tokens: 16000
+  temperature: 0.6
+toolsets:
+  - terminal
+  - file
+  - web
+  - git
+  - session_search
+session:
+  persist: true
+  resume: true
+skills:
+  - github-issues
+  - linear
+  - notion
+  - blogwatcher
+  - plan
+heartbeat:
+  interval_minutes: 10
+  timeout_seconds: 180

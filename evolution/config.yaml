@@ -1,0 +1,42 @@
+# Self-Evolution Engine — GEPA + Judge Configuration
+evolution:
+  mode: continuous
+  skill_dir: /root/.hermes/skills
+  output_dir: /app/evolution_runs
+
+optimizer:
+  provider: minimax
+  name: MiniMax-M2.5
+  max_tokens: 16000
+  temperature: 0.8
+  mutations_per_iteration: 4
+  crossover_rate: 0.3
+
+judge:
+  primary:
+    provider: nvidia_nim
+    name: meta/llama-3.1-70b-instruct
+    max_tokens: 8000
+    temperature: 0.3
+    base_url: https://integrate.api.nvidia.com/v1
+  premium:
+    provider: nvidia_nim
+    name: nvidia/nemotron-4-340b-instruct
+    max_tokens: 4096
+    temperature: 0.2
+    base_url: https://integrate.api.nvidia.com/v1
+
+eval:
+  synthetic_tasks: 10
+  real_world_tasks: 5
+  score_threshold: 8.5
+  benchmark_models:
+    - name: gpt-4o
+      provider: openai
+    - name: claude-sonnet-4
+      provider: anthropic
+
+schedule:
+  full_evolve: "0 2 * * 0"   # Every Sunday 2am
+  skill_hotfix: "0 */4 * * *" # Every 4 hours if skills degrade
+  health_check: "*/30 * * * *" # Every 30 minutes

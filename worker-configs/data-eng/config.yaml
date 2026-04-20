@@ -1,0 +1,25 @@
+model:
+  provider: nvidia_nim
+  name: moonshotai/kimi-k2.5
+  max_tokens: 32000
+  temperature: 0.4
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: mistralai/codestral-22b-instruct-v0.1
+  fast_threshold: 8000
+toolsets:
+  - terminal
+  - file
+  - web
+  - git
+  - code_execution
+session:
+  persist: true
+  resume: true
+skills:
+  - jupyter-live-kernel
+  - github-pr-workflow
+  - systematic-debugging
+heartbeat:
+  interval_minutes: 20
+  timeout_seconds: 300

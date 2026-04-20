@@ -1,0 +1,23 @@
+model:
+  provider: minimax
+  name: MiniMax-M2.5
+  max_tokens: 24000
+  temperature: 0.8
+toolsets:
+  - terminal
+  - file
+  - web
+  - creative
+session:
+  persist: true
+  resume: true
+skills:
+  - xurl
+  - youtube-content
+  - blogwatcher
+  - plan
+  - writing-plans
+  - popular-web-designs
+heartbeat:
+  interval_minutes: 20
+  timeout_seconds: 240

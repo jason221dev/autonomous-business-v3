@@ -1,0 +1,27 @@
+model:
+  provider: nvidia_nim
+  name: mistralai/mistral-nemo-12b-instruct
+  max_tokens: 48000
+  temperature: 0.7
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: mistralai/mixtral-8x7b-instruct-v0.1
+  fast_threshold: 8000
+  long_model: moonshotai/kimi-k2.5
+  long_threshold: 32000
+toolsets:
+  - terminal
+  - file
+  - web
+  - creative
+session:
+  persist: true
+  resume: true
+skills:
+  - xurl
+  - blogwatcher
+  - popular-web-designs
+  - p5js
+heartbeat:
+  interval_minutes: 20
+  timeout_seconds: 240

@@ -1,0 +1,31 @@
+model:
+  provider: nvidia_nim
+  name: moonshotai/kimi-k2.5
+  max_tokens: 32000
+  temperature: 0.4
+  base_url: https://integrate.api.nvidia.com/v1
+routing:
+  fast_model: mistralai/codestral-22b-instruct-v0.1
+  fast_threshold: 8000
+  complex_model: deepseek-ai/deepseek-coder-6.7b-instruct
+  complex_threshold: 32000
+toolsets:
+  - terminal
+  - file
+  - web
+  - git
+  - code_execution
+  - session_search
+session:
+  persist: true
+  resume: true
+skills:
+  - github-pr-workflow
+  - test-driven-development
+  - systematic-debugging
+  - requesting-code-review
+  - codebase-inspection
+  - subagent-driven-development
+heartbeat:
+  interval_minutes: 12
+  timeout_seconds: 240
